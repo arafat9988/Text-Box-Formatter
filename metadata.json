@@ -1,0 +1,6 @@
+{
+  "name": "Bangla English Fixer",
+  "description": "Text box formatter and table converter for Bangla and English questions",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
