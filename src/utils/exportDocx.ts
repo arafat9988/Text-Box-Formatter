@@ -19,10 +19,10 @@ function createMixedFontTextRuns(text: string, isBold: boolean = false): TextRun
     if (isEnglishWord(token)) {
       runs.push(new TextRun({ text: token, font: timesFontObj, bold: isBold, italics: false }));
     } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9]/.test(token)) {
-      const subParts = token.split(/([a-zA-Z0-9]+)/);
+      const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
       for (const part of subParts) {
         if (!part) continue;
-        if (/^[a-zA-Z0-9]+$/.test(part)) {
+        if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
           runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false }));
         } else if (/[\u0980-\u09FF]/.test(part)) {
           runs.push(new TextRun({ text: part, font: solaimanFontObj, bold: isBold, italics: false }));
@@ -59,73 +59,119 @@ function parseFormattedTextRuns(lineText: string): TextRun[] {
   return runs.length > 0 ? runs : createMixedFontTextRuns(lineText, false);
 }
 
-export async function downloadAsDocx(text: string, filename: string = 'Gemini_Chat_Response.docx') {
-  const lines = text.split('\n');
-  const children: Paragraph[] = [];
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      children.push(new Paragraph({ text: '' }));
-      continue;
-    }
-
-    if (trimmed.startsWith('# ')) {
-      const content = trimmed.replace(/^#\s+/, '');
-      children.push(
-        new Paragraph({
-          children: parseFormattedTextRuns(content),
-          heading: HeadingLevel.HEADING_1,
-        })
-      );
-    } else if (trimmed.startsWith('## ')) {
-      const content = trimmed.replace(/^##\s+/, '');
-      children.push(
-        new Paragraph({
-          children: parseFormattedTextRuns(content),
-          heading: HeadingLevel.HEADING_2,
-        })
-      );
-    } else if (trimmed.startsWith('### ')) {
-      const content = trimmed.replace(/^###\s+/, '');
-      children.push(
-        new Paragraph({
-          children: parseFormattedTextRuns(content),
-          heading: HeadingLevel.HEADING_3,
-        })
-      );
-    } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      const content = trimmed.replace(/^[-*]\s+/, '');
-      const runs = parseFormattedTextRuns(content);
-      children.push(
-        new Paragraph({
-          children: runs,
-          bullet: { level: 0 },
-        })
-      );
-    } else {
-      const runs = parseFormattedTextRuns(trimmed);
-      children.push(new Paragraph({ children: runs }));
-    }
-  }
-
-  const doc = new Document({
-    sections: [
-      {
-        properties: {},
-        children,
-      },
-    ],
-  });
-
-  const blob = await Packer.toBlob(doc);
+function triggerBlobDownload(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  const safeFilename = filename.endsWith('.docx') ? filename : `${filename}.docx`;
-  link.download = safeFilename;
+  link.download = filename;
+  link.style.display = 'none';
   document.body.appendChild(link);
   link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  setTimeout(() => {
+    try {
+      if (document.body.contains(link)) {
+        document.body.removeChild(link);
+      }
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      // ignore
+    }
+  }, 10000);
+}
+
+function exportHtmlAsDoc(text: string, filename: string) {
+  const htmlContent = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; font-size: 11pt; line-height: 1.5; color: #111; }
+  h1, h2, h3 { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; color: #000; }
+  p { margin: 0 0 8px 0; }
+  .eng { font-family: 'Times New Roman', serif; }
+  .ben { font-family: 'SolaimanLipi', sans-serif; }
+</style>
+</head>
+<body>
+${text.split('\n').map(l => l.trim() ? `<p>${l}</p>` : '<p>&nbsp;</p>').join('\n')}
+</body>
+</html>`;
+
+  const blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword;charset=utf-8' });
+  const safeName = filename.replace(/\.docx$/i, '.doc');
+  triggerBlobDownload(blob, safeName);
+}
+
+export async function downloadAsDocx(text: string, filename: string = 'Gemini_Chat_Response.docx') {
+  if (!text || !text.trim()) {
+    text = 'কোনো বার্তা নেই';
+  }
+
+  const safeFilename = filename.endsWith('.docx') || filename.endsWith('.doc') ? filename : `${filename}.docx`;
+
+  try {
+    const lines = text.split('\n');
+    const children: Paragraph[] = [];
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        children.push(new Paragraph({ text: '' }));
+        continue;
+      }
+
+      if (trimmed.startsWith('# ')) {
+        const content = trimmed.replace(/^#\s+/, '');
+        children.push(
+          new Paragraph({
+            children: parseFormattedTextRuns(content),
+            heading: HeadingLevel.HEADING_1,
+          })
+        );
+      } else if (trimmed.startsWith('## ')) {
+        const content = trimmed.replace(/^##\s+/, '');
+        children.push(
+          new Paragraph({
+            children: parseFormattedTextRuns(content),
+            heading: HeadingLevel.HEADING_2,
+          })
+        );
+      } else if (trimmed.startsWith('### ')) {
+        const content = trimmed.replace(/^###\s+/, '');
+        children.push(
+          new Paragraph({
+            children: parseFormattedTextRuns(content),
+            heading: HeadingLevel.HEADING_3,
+          })
+        );
+      } else if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+        const content = trimmed.replace(/^[-*]\s+/, '');
+        const runs = parseFormattedTextRuns(content);
+        children.push(
+          new Paragraph({
+            children: runs,
+            bullet: { level: 0 },
+          })
+        );
+      } else {
+        const runs = parseFormattedTextRuns(trimmed);
+        children.push(new Paragraph({ children: runs }));
+      }
+    }
+
+    const doc = new Document({
+      sections: [
+        {
+          properties: {},
+          children,
+        },
+      ],
+    });
+
+    const blob = await Packer.toBlob(doc);
+    triggerBlobDownload(blob, safeFilename);
+  } catch (error) {
+    console.warn('Docx Packer failed, falling back to HTML Word doc:', error);
+    exportHtmlAsDoc(text, safeFilename);
+  }
 }

@@ -19,11 +19,20 @@ import {
   generateFormattedTableHtml,
   generateVersionFormattedTableHtml,
   formatConverterTextOutput,
-  formatBlocksToStructuredText
+  formatBlocksToStructuredText,
+  cleanExplanationText
 } from './utils/parser';
 import { translateBengaliToEnglish, localRuleBasedTranslate } from './utils/translate';
 import { ChatTab } from './components/ChatTab';
 import { QuickLinksMenu } from './components/QuickLinksMenu';
+import { BookHistoryModal } from './components/BookHistoryModal';
+import { AuthorProfileModal } from './components/AuthorProfileModal';
+import {
+  HistoryBook,
+  saveHistoryBook,
+  getAllHistoryBooks,
+  updateHistoryBookTag
+} from './utils/bookHistoryDB';
 
 declare global {
   interface Window {
@@ -32,6 +41,16 @@ declare global {
     mammoth?: any;
     htmlDocx?: any;
   }
+}
+
+export interface QcBook {
+  id: string;
+  name: string;
+  shortTag: string;
+  totalPages: number;
+  doc: any;
+  arrayBuffer: ArrayBuffer;
+  isSelected: boolean;
 }
 
 export default function App() {
@@ -392,17 +411,40 @@ export default function App() {
   const [actionMsgTR2, setActionMsgTR2] = useState<string>('');
 
   // Tab 3: Question Collect State
+  const [qcBooks, setQcBooks] = useState<QcBook[]>([]);
+  const [activeQcBookId, setActiveQcBookId] = useState<string | null>(null);
   const [qcInputText, setQcInputText] = useState<string>('');
   const [qcFileName, setQcFileName] = useState<string>('');
   const [qcFileStatus, setQcFileStatus] = useState<string>('');
   const [qcResultText, setQcResultText] = useState<string>('');
   const [msgQc, setMsgQc] = useState<string>('');
-  const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [pdfPageNum, setPdfPageNum] = useState<number>(1);
-  const [pdfTotalPages, setPdfTotalPages] = useState<number>(0);
   const [isCollecting, setIsCollecting] = useState<boolean>(false);
   const [qcStatusMsg, setQcStatusMsg] = useState<string>('');
+  const [isDraggingQcPdf, setIsDraggingQcPdf] = useState<boolean>(false);
+  const [isBookHistoryOpen, setIsBookHistoryOpen] = useState<boolean>(false);
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
+  const [historyCount, setHistoryCount] = useState<number>(0);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const qcFileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfRenderTaskRef = useRef<any>(null);
+
+  const refreshHistoryCount = async () => {
+    try {
+      const books = await getAllHistoryBooks();
+      setHistoryCount(books.length);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  useEffect(() => {
+    refreshHistoryCount();
+  }, []);
+
+  const activeBook = qcBooks.find(b => b.id === activeQcBookId) || qcBooks[0] || null;
+  const pdfDoc = activeBook?.doc || null;
+  const pdfTotalPages = activeBook?.totalPages || 0;
 
   // Tab 4: Version State
   const [inputVersionText, setInputVersionText] = useState<string>('');
@@ -756,6 +798,24 @@ export default function App() {
           }
           if (isEnglishWord(token, customDict)) {
             return <span key={`${prefix}-${tIdx}`} className="eng-text">{token}</span>;
+          } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
+            const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
+            return subParts.map((part, sIdx) => {
+              if (!part) return null;
+              if (isEnglishWord(part, customDict) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
+                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text">{part}</span>;
+              } else if (/[\u0980-\u09FF]/.test(part)) {
+                if (fontMode === 'SutonnyMJ') {
+                  const bijoyPart = forceBijoyInput ? part : unicodeToBijoy(part);
+                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="bijoy-text">{bijoyPart}</span>;
+                } else {
+                  const uniPart = forceBijoyInput ? bijoyToUnicode(part) : part;
+                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="ben-text" style={{ fontFamily: "'SolaimanLipi', 'Solaiman Lipi', sans-serif", msoBidiFontFamily: "'SolaimanLipi'", msoAsciiFontFamily: "'SolaimanLipi'", msoHansiFontFamily: "'SolaimanLipi'" } as any}>{uniPart}</span>;
+                }
+              } else {
+                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text">{part}</span>;
+              }
+            });
           } else {
             if (fontMode === 'SutonnyMJ') {
               const bijoyToken = forceBijoyInput ? token : unicodeToBijoy(token);
@@ -1188,41 +1248,284 @@ export default function App() {
   /* ================= PDF PREVIEW RENDER ================= */
   const renderPdfPage = async (doc: any, pageNum: number) => {
     if (!doc || !pdfCanvasRef.current) return;
+    
+    // Cancel any previous in-flight render task on this canvas
+    if (pdfRenderTaskRef.current) {
+      try {
+        pdfRenderTaskRef.current.cancel();
+      } catch {
+        // ignore cancellation error
+      }
+      pdfRenderTaskRef.current = null;
+    }
+
     try {
       const page = await doc.getPage(pageNum);
       const viewport = page.getViewport({ scale: 1.5 });
       const canvas = pdfCanvasRef.current;
+      if (!canvas) return;
       const context = canvas.getContext('2d');
       if (context) {
         canvas.height = viewport.height;
         canvas.width = viewport.width;
-        await page.render({ canvasContext: context, viewport }).promise;
+        const renderTask = page.render({ canvasContext: context, viewport });
+        pdfRenderTaskRef.current = renderTask;
+        await renderTask.promise;
       }
-    } catch (e) {
-      console.error('Error rendering PDF page:', e);
+    } catch (e: any) {
+      // PDF.js throws RenderingCancelledException when a render task is cancelled, which is normal
+      if (e?.name !== 'RenderingCancelledException' && e?.message !== 'Rendering cancelled') {
+        console.error('Error rendering PDF page:', e);
+      }
+    } finally {
+      pdfRenderTaskRef.current = null;
     }
   };
 
-  const handleQcPdfUpload = async (file: File) => {
-    setQcFileStatus('PDF ফাইল লোড হচ্ছে...');
-    const baseName = file.name.replace(/\.[^/.]+$/, '');
-    setQcFileName(baseName + '.docx');
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const doc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      setPdfDoc(doc);
-      setPdfTotalPages(doc.numPages);
-      setPdfPageNum(1);
-      setQcFileStatus(`সফলভাবে লোড হয়েছে! মোট পেজ: ${doc.numPages}`);
-      renderPdfPage(doc, 1);
-    } catch (e) {
-      setQcFileStatus('PDF লোড করতে সমস্যা হয়েছে!');
+  // Automatically render the PDF page whenever the user navigates, uploads, or switches tabs
+  useEffect(() => {
+    if (activeTab === 'question-collect' && pdfDoc) {
+      const timer = setTimeout(() => {
+        renderPdfPage(pdfDoc, pdfPageNum);
+      }, 50);
+      return () => {
+        clearTimeout(timer);
+        if (pdfRenderTaskRef.current) {
+          try {
+            pdfRenderTaskRef.current.cancel();
+          } catch {
+            // ignore
+          }
+          pdfRenderTaskRef.current = null;
+        }
+      };
     }
+  }, [activeTab, pdfDoc, pdfPageNum]);
+
+  const handleQcPdfUpload = async (files: FileList | File[] | File) => {
+    const rawFiles: File[] = files instanceof FileList ? Array.from(files) : Array.isArray(files) ? files : [files];
+    const pdfFiles = rawFiles.filter(f => f.name.toLowerCase().endsWith('.pdf') || f.type === 'application/pdf');
+
+    if (pdfFiles.length === 0) {
+      alert('দয়া করে একটি বা একাধিক বৈধ PDF (.pdf) ফাইল সিলেক্ট করুন!');
+      return;
+    }
+
+    setQcFileStatus(`${pdfFiles.length}টি PDF ফাইল লোড হচ্ছে...`);
+
+    const loadedBooks: QcBook[] = [];
+
+    for (let file of pdfFiles) {
+      try {
+        const arrayBuffer = await file.arrayBuffer();
+        const doc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+        const baseName = file.name.replace(/\.[^/.]+$/, '');
+
+        // Generate clean short tag
+        let shortTag = '';
+        const upper = baseName.toUpperCase();
+        if (upper.includes('MQB')) shortTag = 'MQB';
+        else if (upper.includes('GK')) shortTag = 'GK';
+        else if (upper.includes('BANGLA') || upper.includes('BAN')) shortTag = 'Bangla';
+        else if (upper.includes('ENGLISH') || upper.includes('ENG')) shortTag = 'English';
+        else if (upper.includes('MATH')) shortTag = 'Math';
+        else if (upper.includes('BCS')) shortTag = 'BCS';
+        else {
+          const parts = baseName.split(/[\s_\-\.]+/).filter(Boolean);
+          shortTag = parts.length > 0 ? parts[0] : 'Book';
+        }
+
+        const bookId = 'book_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6);
+        loadedBooks.push({
+          id: bookId,
+          name: file.name,
+          shortTag: shortTag,
+          totalPages: doc.numPages,
+          doc: doc,
+          arrayBuffer: arrayBuffer,
+          isSelected: true
+        });
+      } catch (err) {
+        console.error('Error loading PDF:', file.name, err);
+      }
+    }
+
+    if (loadedBooks.length > 0) {
+      setQcBooks(prev => {
+        const updated = [...prev, ...loadedBooks];
+        return updated;
+      });
+      // Save all newly loaded books to IndexedDB history
+      for (const lb of loadedBooks) {
+        saveHistoryBook({
+          id: lb.id,
+          name: lb.name,
+          shortTag: lb.shortTag,
+          totalPages: lb.totalPages,
+          fileSizeBytes: lb.arrayBuffer.byteLength,
+          uploadedAt: new Date().toISOString(),
+          arrayBuffer: lb.arrayBuffer
+        }).catch(err => console.error("Error saving to book history DB:", err));
+      }
+      refreshHistoryCount();
+
+      // If no active book, set first new book as active
+      setActiveQcBookId(prev => prev || loadedBooks[0].id);
+      setPdfPageNum(1);
+      setQcFileStatus(`মোট ${loadedBooks.length}টি বই সফলভাবে যুক্ত করা হয়েছে!`);
+      if (!qcFileName) {
+        setQcFileName(loadedBooks[0].name.replace(/\.[^/.]+$/, '') + '.docx');
+      }
+    } else {
+      setQcFileStatus('PDF ফাইল লোড করতে সমস্যা হয়েছে!');
+    }
+  };
+
+  const toggleBookSelection = (bookId: string) => {
+    setQcBooks(prev => prev.map(b => b.id === bookId ? { ...b, isSelected: !b.isSelected } : b));
+  };
+
+  const selectAllBooks = (select: boolean) => {
+    setQcBooks(prev => prev.map(b => ({ ...b, isSelected: select })));
+  };
+
+  const deleteBook = (bookId: string) => {
+    setQcBooks(prev => {
+      const remaining = prev.filter(b => b.id !== bookId);
+      if (activeQcBookId === bookId) {
+        setActiveQcBookId(remaining.length > 0 ? remaining[0].id : null);
+        setPdfPageNum(1);
+      }
+      return remaining;
+    });
+  };
+
+  const updateBookTag = (bookId: string, newTag: string) => {
+    const trimmed = newTag.trim();
+    setQcBooks(prev => prev.map(b => b.id === bookId ? { ...b, shortTag: trimmed } : b));
+    updateHistoryBookTag(bookId, trimmed).catch(e => console.error(e));
+  };
+
+  const restoreBookFromHistory = async (hBook: HistoryBook) => {
+    const existing = qcBooks.find(b => b.id === hBook.id || b.name.toLowerCase() === hBook.name.toLowerCase());
+    if (existing) {
+      setQcBooks(prev => prev.map(b => b.id === existing.id ? { ...b, isSelected: true } : b));
+      setActiveQcBookId(existing.id);
+      setPdfPageNum(1);
+      setQcFileStatus(`"${existing.name}" বইটি সক্রিয় তালিকায় রয়েছে!`);
+      return;
+    }
+
+    let doc: any = null;
+    if (window.pdfjsLib) {
+      doc = await window.pdfjsLib.getDocument({ data: hBook.arrayBuffer.slice(0) }).promise;
+    }
+
+    const restoredQcBook: QcBook = {
+      id: hBook.id,
+      name: hBook.name,
+      shortTag: hBook.shortTag,
+      totalPages: hBook.totalPages || doc?.numPages || 1,
+      doc: doc,
+      arrayBuffer: hBook.arrayBuffer,
+      isSelected: true
+    };
+
+    setQcBooks(prev => [...prev, restoredQcBook]);
+    setActiveQcBookId(restoredQcBook.id);
+    setPdfPageNum(1);
+    setQcFileStatus(`"${hBook.name}" বইটি সক্রিয় তালিকায় ফিরিয়ে আনা হয়েছে!`);
+  };
+
+  const restoreAllBooksFromHistory = async (hBooks: HistoryBook[]) => {
+    const newQcBooks: QcBook[] = [];
+    for (const hBook of hBooks) {
+      const existing = qcBooks.find(b => b.id === hBook.id || b.name.toLowerCase() === hBook.name.toLowerCase());
+      if (existing) {
+        setQcBooks(prev => prev.map(b => b.id === existing.id ? { ...b, isSelected: true } : b));
+      } else {
+        let doc: any = null;
+        if (window.pdfjsLib) {
+          try {
+            doc = await window.pdfjsLib.getDocument({ data: hBook.arrayBuffer.slice(0) }).promise;
+          } catch (e) {
+            console.warn("Restore pdfjs error", e);
+          }
+        }
+        newQcBooks.push({
+          id: hBook.id,
+          name: hBook.name,
+          shortTag: hBook.shortTag,
+          totalPages: hBook.totalPages || doc?.numPages || 1,
+          doc: doc,
+          arrayBuffer: hBook.arrayBuffer,
+          isSelected: true
+        });
+      }
+    }
+
+    if (newQcBooks.length > 0) {
+      setQcBooks(prev => [...prev, ...newQcBooks]);
+      if (!activeQcBookId) {
+        setActiveQcBookId(newQcBooks[0].id);
+      }
+    }
+    setQcFileStatus(`ইতিহাসের ${hBooks.length}টি বই কার্যকারী তালিকায় লোড করা হয়েছে!`);
+  };
+
+  const handleClearQcPdf = () => {
+    if (pdfRenderTaskRef.current) {
+      try {
+        pdfRenderTaskRef.current.cancel();
+      } catch {
+        // ignore
+      }
+      pdfRenderTaskRef.current = null;
+    }
+    setQcBooks([]);
+    setActiveQcBookId(null);
+    setQcFileStatus('');
+    setPdfPageNum(1);
+    if (qcFileInputRef.current) {
+      qcFileInputRef.current.value = '';
+    }
+  };
+
+  const findBookForReference = (line: string, books: QcBook[], defaultBook: QcBook): QcBook => {
+    if (books.length <= 1) return books[0] || defaultBook;
+    const lineLower = line.toLowerCase();
+
+    // 1. Exact or partial short tag match (e.g. "mqb", "gk", "bangla", "eng", "bcs")
+    for (const b of books) {
+      if (b.shortTag) {
+        const tagLower = b.shortTag.toLowerCase();
+        const tagRegex = new RegExp(`(^|[^a-zA-Z0-9\u0980-\u09FF])${tagLower}([^a-zA-Z0-9\u0980-\u09FF]|$)`, 'i');
+        if (tagRegex.test(lineLower) || lineLower.includes(tagLower)) {
+          return b;
+        }
+      }
+    }
+
+    // 2. Filename tokens match (e.g. "2nd", "master", "vap", "bangla", "english", "gk")
+    for (const b of books) {
+      const tokens = b.name.replace(/\.pdf$/i, '').split(/[\s_\-\.\(\)\[\]]+/).filter(t => t.length >= 2);
+      for (const t of tokens) {
+        const tLower = t.toLowerCase();
+        if (['pdf', 'final', 'update', 'the', 'and', 'file'].includes(tLower)) continue;
+        const tokRegex = new RegExp(`(^|[^a-zA-Z0-9\u0980-\u09FF])${tLower}([^a-zA-Z0-9\u0980-\u09FF]|$)`, 'i');
+        if (tokRegex.test(lineLower) || (tLower.length >= 3 && lineLower.includes(tLower))) {
+          return b;
+        }
+      }
+    }
+
+    return defaultBook;
   };
 
   const collectQuestionsFromPdf = async () => {
-    if (!pdfDoc) {
-      alert('প্রথমে একটি PDF ফাইল আপলোড করুন!');
+    const selectedBooks = qcBooks.filter(b => b.isSelected);
+    if (selectedBooks.length === 0) {
+      alert('অনুগ্রহ করে কাজের জন্য কমপক্ষে একটি বই টিক দিয়ে সিলেক্ট করুন!');
       return;
     }
     if (!qcInputText.trim()) {
@@ -1235,7 +1538,7 @@ export default function App() {
     setQcResultText('');
 
     // Cache page text in memory so multiple questions on the same page do not trigger repeated OCR requests
-    const pageTextCache = new Map<number, string>();
+    const pageTextCache = new Map<string, string>(); // Key: `${bookId}_${pageNum}`
     const allCollectedList: string[] = [];
     let totalCollectedCount = 0;
 
@@ -1320,22 +1623,27 @@ export default function App() {
 
       for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
         let line = lines[lineIndex];
+        const targetBook = findBookForReference(line, selectedBooks, activeBook || selectedBooks[0]);
+        const currentDoc = targetBook.doc;
+
         let { pageNum: targetPageNum, qNums: targetQNums } = parseReferenceLine(line, lastRenderedPage);
 
-        if (targetPageNum > pdfDoc.numPages || targetPageNum < 1) targetPageNum = 1;
+        if (targetPageNum > targetBook.totalPages || targetPageNum < 1) targetPageNum = 1;
         lastRenderedPage = targetPageNum;
 
         // Update PDF page and preview canvas in real time
+        setActiveQcBookId(targetBook.id);
         setPdfPageNum(targetPageNum);
-        await renderPdfPage(pdfDoc, targetPageNum);
+        await renderPdfPage(currentDoc, targetPageNum);
 
         const qNumsDisplay = targetQNums.length > 0 ? `প্রশ্ন ${targetQNums.join(', ')}` : 'সকল প্রশ্ন';
-        setQcStatusMsg(`রেফারেন্স (${lineIndex + 1}/${lines.length}) প্রসেস হচ্ছে: পেজ ${targetPageNum}, ${qNumsDisplay}...`);
+        setQcStatusMsg(`[${targetBook.shortTag || targetBook.name.slice(0, 10)}] পেজ ${targetPageNum}, ${qNumsDisplay} (${lineIndex + 1}/${lines.length})...`);
 
-        let pageText = pageTextCache.get(targetPageNum) || "";
+        const cacheKey = `${targetBook.id}_page_${targetPageNum}`;
+        let pageText = pageTextCache.get(cacheKey) || "";
 
         if (!pageText) {
-          let page = await pdfDoc.getPage(targetPageNum);
+          let page = await currentDoc.getPage(targetPageNum);
 
           // First attempt: High-Precision OCR via Gemini (when online) to ensure 100% clean Bengali text
           if (navigator.onLine) {
@@ -1434,7 +1742,7 @@ export default function App() {
           }
 
           if (pageText) {
-            pageTextCache.set(targetPageNum, pageText);
+            pageTextCache.set(cacheKey, pageText);
           }
         }
 
@@ -1470,11 +1778,10 @@ export default function App() {
               }
             });
             if (block.explanation) {
-              let expText = block.explanation.trim();
-              if (!/^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer)[\:\-\s]/i.test(expText)) {
-                expText = `ব্যাখ্যা: ${expText}`;
+              let expText = cleanExplanationText(block.explanation);
+              if (expText) {
+                qOut += `ব্যাখ্যা: ${expText}\n`;
               }
-              qOut += `${expText}\n`;
             }
 
             lineMatchedQuestions.push(qOut.trim());
@@ -1619,9 +1926,15 @@ export default function App() {
     <div className="max-w-[950px] mx-auto p-4 md:p-6 bg-white rounded-xl shadow-md my-4">
       {/* Top Header Bar */}
       <div className="flex flex-wrap justify-between items-center mb-4 gap-2">
-        <div className="bg-gray-100 border-2 border-gray-300 px-3 py-1.5 rounded-md font-mono font-bold text-xs md:text-sm text-gray-800 shadow-inner">
-          arafat-3802-bangla-english-fixer
-        </div>
+        <button
+          type="button"
+          onClick={() => setIsProfileModalOpen(true)}
+          className="bg-slate-100 hover:bg-indigo-50 border-2 border-gray-300 hover:border-indigo-400 px-3 py-1.5 rounded-md font-sans font-bold text-xs md:text-sm text-gray-800 hover:text-indigo-800 shadow-inner flex items-center gap-2 cursor-pointer transition-all group"
+          title="ডেভেলপার পরিচিতি ও ফিচার গাইড দেখতে ক্লিক করুন"
+        >
+          <i className="fa-solid fa-circle-info text-indigo-600 group-hover:scale-110 transition-transform"></i>
+          <span>Website Creator & Developer Arafat Kazi Profile</span>
+        </button>
         <div className="flex items-center gap-2">
           <div className="bg-emerald-50 border-2 border-emerald-500 px-3 py-1.5 rounded-md font-bold text-xs md:text-sm text-emerald-700">
             <a
@@ -2305,38 +2618,269 @@ export default function App() {
       {activeTab === 'question-collect' && (
         <div>
           <div className="border border-sky-400 bg-sky-50 text-sky-800 p-3 rounded text-xs mb-4">
-            <strong className="block mb-1 text-sm text-sky-900">নিয়মাবলী:</strong>
+            <strong className="block mb-1 text-sm text-sky-900">নিয়মাবলী ও বই ব্যবহারের পদ্ধতি:</strong>
             <ol className="list-decimal list-inside space-y-1">
-              <li>প্রথমে এখানে আমাদের একটা বইয়ের PDF বা ফাইল আপলোড করুন।</li>
-              <li>তারপর সেখানে বইয়ের ভেতর পেজ নাম্বার ও প্রশ্ন নাম্বার লিখুন। যেমন: পৃষ্ঠা: ০৩, প্রশ্ন: ০৫ বা ১১</li>
-              <li>এই অনুযায়ী সিস্টেম স্বয়ংক্রিয়ভাবে নির্দিষ্ট প্রশ্নটি কালেক্ট করে দেবে এবং নিচে PDF-এর প্রিভিউ দেখাবে।</li>
+              <li>এক বা একাধিক বইয়ের PDF ফাইল একসাথে আপলোড বা টেনে এনে (Drag & Drop) যুক্ত করতে পারবেন।</li>
+              <li>কাজের সুবিধার জন্য প্রতিটি বইয়ের পাশে <strong>টিক মার্ক (✓)</strong> দিয়ে সিলেক্ট বা আনসিলেক্ট করতে পারবেন।</li>
+              <li>পেজ নাম্বার ও প্রশ্ন নাম্বার লিখুন (যেমন: <code className="bg-sky-100 px-1 py-0.5 rounded text-sky-900 font-bold">পৃষ্ঠা: ১০, প্রশ্ন: ৪</code> বা <code className="bg-sky-100 px-1 py-0.5 rounded text-sky-900 font-bold">26. MQB P 180 q 39</code>)।</li>
+              <li>সিস্টেম স্বয়ংক্রিয়ভাবে সিলেক্টকৃত বইসমূহ থেকে প্রশ্ন কালেক্ট করবে এবং নিচে বইয়ের পৃষ্ঠা প্রিভিউ দেখাবে।</li>
             </ol>
           </div>
 
-          <div className="flex justify-between items-center mb-1">
-            <label className="font-bold text-sm text-gray-800">বইয়ের PDF বা ডকুমেন্ট আপলোড করুন:</label>
-            <button
-              onClick={() => {
-                setPdfDoc(null);
-                setQcFileStatus('');
-                setPdfTotalPages(0);
-                setPdfPageNum(1);
-              }}
-              className="bg-red-600 text-white text-xs px-2 py-1 rounded font-bold hover:bg-red-700"
-            >
-              মুছে ফেলুন
-            </button>
-          </div>
+          {/* Book Management Section */}
+          <div className="mb-4">
+            <div className="flex justify-between items-center mb-2 flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <label className="font-bold text-sm text-gray-800 flex items-center gap-1.5">
+                  <i className="fa-solid fa-book-bookmark text-sky-600"></i>
+                  বইয়ের তালিকা ({qcBooks.length}টি বই, {qcBooks.filter(b => b.isSelected).length}টি সিলেক্টেড):
+                </label>
+              </div>
 
-          <div className="border border-gray-300 rounded-lg p-2 bg-white mb-2">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {qcBooks.length > 0 && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => selectAllBooks(true)}
+                      className="bg-emerald-50 text-emerald-700 border border-emerald-300 text-xs px-2.5 py-1 rounded font-bold hover:bg-emerald-100 transition-colors flex items-center gap-1"
+                      title="সব বই সিলেক্ট করুন"
+                    >
+                      <i className="fa-solid fa-check-double"></i> সব সিলেক্ট
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => selectAllBooks(false)}
+                      className="bg-gray-100 text-gray-700 border border-gray-300 text-xs px-2.5 py-1 rounded font-bold hover:bg-gray-200 transition-colors flex items-center gap-1"
+                      title="সব বই আনসিলেক্ট করুন"
+                    >
+                      <i className="fa-solid fa-xmark"></i> সব আনসিলেক্ট
+                    </button>
+                  </>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsBookHistoryOpen(true)}
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1 rounded font-bold transition-all flex items-center gap-1.5 shadow-xs border border-purple-500/30"
+                  title="আপলোডকৃত ও সংগৃহীত সব বইয়ের ইতিহাস দেখুন"
+                >
+                  <i className="fa-solid fa-clock-rotate-left text-purple-200"></i> Book History
+                  {historyCount > 0 && (
+                    <span className="bg-purple-900 text-white text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold">
+                      {historyCount}
+                    </span>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => qcFileInputRef.current?.click()}
+                  className="bg-sky-600 text-white text-xs px-3 py-1 rounded font-bold hover:bg-sky-700 transition-colors flex items-center gap-1.5 shadow-sm"
+                >
+                  <i className="fa-solid fa-plus"></i> বই যোগ করুন
+                </button>
+                {qcBooks.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleClearQcPdf}
+                    className="bg-red-600 text-white text-xs px-2.5 py-1 rounded font-bold hover:bg-red-700 transition-colors flex items-center gap-1 shadow-sm"
+                    title="সকল বই মুছে ফেলুন"
+                  >
+                    <i className="fa-solid fa-trash-can"></i> সব মুছুন
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Hidden multi-file input */}
             <input
+              ref={qcFileInputRef}
               type="file"
               accept=".pdf"
-              className="w-full text-sm text-gray-700"
-              onChange={(e) => e.target.files && e.target.files[0] && handleQcPdfUpload(e.target.files[0])}
+              multiple
+              className="hidden"
+              onChange={(e) => e.target.files && handleQcPdfUpload(e.target.files)}
             />
+
+            {/* Book Cards List (when books uploaded) */}
+            {qcBooks.length > 0 ? (
+              <div className="space-y-2 mb-3">
+                {qcBooks.map((book) => {
+                  const isActivePreview = activeQcBookId === book.id || (!activeQcBookId && qcBooks[0]?.id === book.id);
+                  return (
+                    <div
+                      key={book.id}
+                      className={`border rounded-lg p-2.5 bg-white transition-all flex items-center justify-between flex-wrap gap-2 ${
+                        book.isSelected
+                          ? isActivePreview
+                            ? 'border-sky-500 bg-sky-50/40 ring-2 ring-sky-200 shadow-sm'
+                            : 'border-emerald-400 bg-emerald-50/20 shadow-xs'
+                          : 'border-gray-200 bg-gray-50/70 opacity-75'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 min-w-0 flex-1">
+                        {/* Checkbox (টিক মার্ক দেওয়া ও উঠিয়ে ফেলা) */}
+                        <label className="cursor-pointer flex items-center select-none group" title={book.isSelected ? 'টিক উঠিয়ে দিন' : 'কাজের জন্য টিক দিন'}>
+                          <input
+                            type="checkbox"
+                            checked={book.isSelected}
+                            onChange={() => toggleBookSelection(book.id)}
+                            className="w-5 h-5 accent-emerald-600 rounded cursor-pointer transition-transform group-hover:scale-110"
+                          />
+                        </label>
+
+                        {/* PDF Icon */}
+                        <div className={`w-9 h-9 rounded-md flex items-center justify-center font-bold text-lg shrink-0 border ${
+                          book.isSelected ? 'bg-red-50 text-red-600 border-red-200' : 'bg-gray-100 text-gray-400 border-gray-200'
+                        }`}>
+                          <i className="fa-solid fa-file-pdf"></i>
+                        </div>
+
+                        {/* Book Details */}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className={`font-bold text-sm truncate max-w-md ${book.isSelected ? 'text-gray-900' : 'text-gray-500 line-through'}`} title={book.name}>
+                              {book.name}
+                            </p>
+                            <span
+                              className={`text-[11px] px-1.5 py-0.5 rounded font-mono font-bold border ${
+                                book.isSelected ? 'bg-sky-100 text-sky-800 border-sky-300' : 'bg-gray-100 text-gray-500 border-gray-200'
+                              }`}
+                              title="রেফারেন্স ট্যাগ (ইনপুটে এই নাম বা ট্যাগ দিয়েও প্রশ্ন সংগ্রহ করা যাবে)"
+                            >
+                              tag: {book.shortTag}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-gray-500 mt-0.5">
+                            <span>মোট পেজ: <strong>{book.totalPages}</strong></span>
+                            <span>•</span>
+                            <span className={book.isSelected ? 'text-emerald-600 font-bold flex items-center gap-1' : 'text-gray-400'}>
+                              {book.isSelected ? (
+                                <>
+                                  <i className="fa-solid fa-circle-check text-emerald-500 text-[10px]"></i> সক্রিয় (কাজের জন্য প্রস্তুত)
+                                </>
+                              ) : (
+                                'নিষ্ক্রিয় (বাদ রাখা হয়েছে)'
+                              )}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Card Action Buttons */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setActiveQcBookId(book.id);
+                            setPdfPageNum(1);
+                          }}
+                          className={`text-xs px-2.5 py-1.5 rounded font-bold transition flex items-center gap-1.5 ${
+                            isActivePreview
+                              ? 'bg-sky-600 text-white shadow-xs'
+                              : 'bg-white border border-gray-300 text-gray-700 hover:bg-sky-50 hover:text-sky-700 hover:border-sky-300'
+                          }`}
+                        >
+                          <i className={`fa-solid ${isActivePreview ? 'fa-eye' : 'fa-book-open'}`}></i>
+                          {isActivePreview ? 'প্রিভিউ হচ্ছে' : 'প্রিভিউ দেখুন'}
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => deleteBook(book.id)}
+                          title="এই বইটি মুছে ফেলুন"
+                          className="w-8 h-8 flex items-center justify-center rounded text-red-500 hover:bg-red-50 hover:text-red-700 border border-transparent hover:border-red-200 transition"
+                        >
+                          <i className="fa-solid fa-trash-can"></i>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Compact Drag-Drop to add more books */}
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingQcPdf(true);
+                  }}
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingQcPdf(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingQcPdf(false);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setIsDraggingQcPdf(false);
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      handleQcPdfUpload(e.dataTransfer.files);
+                    }
+                  }}
+                  onClick={() => qcFileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-lg p-3 text-center cursor-pointer transition-all ${
+                    isDraggingQcPdf
+                      ? 'border-sky-500 bg-sky-100 ring-2 ring-sky-300'
+                      : 'border-sky-300 hover:border-sky-500 bg-sky-50/40 hover:bg-sky-50'
+                  }`}
+                >
+                  <p className="font-bold text-xs text-sky-800 flex items-center justify-center gap-1.5">
+                    <i className="fa-solid fa-cloud-arrow-up text-sm"></i>
+                    {isDraggingQcPdf ? 'ফাইলগুলো এখানে ছেড়ে দিন...' : '+ আরও বইয়ের PDF ফাইল টেনে এনে ছাড়ুন বা ক্লিক করে যুক্ত করুন'}
+                  </p>
+                </div>
+              </div>
+            ) : (
+              /* Hero Drag & Drop Area (when no books uploaded) */
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingQcPdf(true);
+                }}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingQcPdf(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingQcPdf(false);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingQcPdf(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    handleQcPdfUpload(e.dataTransfer.files);
+                  }
+                }}
+                onClick={() => qcFileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-lg p-7 text-center cursor-pointer transition-all duration-200 mb-3 ${
+                  isDraggingQcPdf
+                    ? 'border-sky-500 bg-sky-100/80 ring-4 ring-sky-100 scale-[1.01]'
+                    : 'border-sky-300 hover:border-sky-500 bg-sky-50/50 hover:bg-sky-50 shadow-sm'
+                }`}
+              >
+                <div className="w-14 h-14 mx-auto mb-2.5 rounded-full bg-sky-100 flex items-center justify-center text-sky-600 shadow-inner">
+                  <i className="fa-solid fa-cloud-arrow-up text-2xl"></i>
+                </div>
+                <p className="font-bold text-base text-sky-900">
+                  {isDraggingQcPdf ? 'বইগুলো এখানে ছেড়ে দিন...' : 'এক বা একাধিক বইয়ের PDF ফাইল আপলোড করতে এখানে ক্লিক করুন বা টেনে এনে ছেড়ে দিন'}
+                </p>
+                <p className="text-xs text-gray-500 mt-1">
+                  Drag & Drop multiple .PDF files or click to browse
+                </p>
+                {qcFileStatus && <div className="text-xs text-sky-700 font-bold mt-2">{qcFileStatus}</div>}
+              </div>
+            )}
           </div>
-          {qcFileStatus && <div className="text-xs text-emerald-600 font-bold mb-4">{qcFileStatus}</div>}
 
           <div className="flex justify-between items-center mt-4 mb-1">
             <label className="font-bold text-sm text-gray-800">পেজ নাম্বার ও প্রশ্ন নাম্বার লিখুন:</label>
@@ -2402,46 +2946,74 @@ export default function App() {
 
           {/* PDF Viewer Canvas */}
           <div>
-            <label className="font-bold text-sm text-gray-800 block mb-1">PDF প্রিভিউ (পৃষ্ঠা অনুযায়ী):</label>
-            <div className="border border-gray-300 rounded bg-slate-900 overflow-hidden">
-              <div className="flex justify-between items-center bg-slate-800 p-2 text-white text-xs">
+            <div className="flex justify-between items-center mb-1.5 flex-wrap gap-2">
+              <label className="font-bold text-sm text-gray-800">
+                PDF প্রিভিউ (পৃষ্ঠা অনুযায়ী):
+              </label>
+              {qcBooks.length > 1 && (
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-gray-600 font-bold">বই পরিবর্তন:</span>
+                  <select
+                    value={activeQcBookId || qcBooks[0]?.id || ''}
+                    onChange={(e) => {
+                      setActiveQcBookId(e.target.value);
+                      setPdfPageNum(1);
+                    }}
+                    className="border border-gray-300 rounded px-2 py-1 bg-white text-gray-800 font-bold focus:outline-none focus:border-sky-500"
+                  >
+                    {qcBooks.map((b) => (
+                      <option key={b.id} value={b.id}>
+                        {b.isSelected ? '✓ ' : '✕ '} {b.name} ({b.totalPages}p)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            <div className="border border-gray-300 rounded bg-slate-900 overflow-hidden shadow-sm">
+              <div className="flex justify-between items-center bg-slate-800 p-2 text-white text-xs flex-wrap gap-2">
                 <button
                   onClick={() => {
                     if (pdfDoc && pdfPageNum > 1) {
-                      const prev = pdfPageNum - 1;
-                      setPdfPageNum(prev);
-                      renderPdfPage(pdfDoc, prev);
+                      setPdfPageNum(pdfPageNum - 1);
                     }
                   }}
-                  className="bg-slate-700 hover:bg-sky-600 px-2.5 py-1 rounded"
+                  className="bg-slate-700 hover:bg-sky-600 px-2.5 py-1 rounded transition-colors"
                 >
                   <i className="fa-solid fa-chevron-left mr-1"></i> পূর্ববর্তী পৃষ্ঠা
                 </button>
-                <div className="flex items-center gap-1">
-                  <span>পেজ:</span>
-                  <input
-                    type="text"
-                    value={pdfPageNum}
-                    onChange={(e) => {
-                      const val = parseInt(convertToEnglishDigits(e.target.value));
-                      if (!isNaN(val) && val >= 1 && val <= pdfTotalPages) {
-                        setPdfPageNum(val);
-                        renderPdfPage(pdfDoc, val);
-                      }
-                    }}
-                    className="w-14 px-1 py-0.5 border border-slate-600 rounded text-center text-black font-bold"
-                  />
-                  <span>/ {pdfTotalPages}</span>
+
+                <div className="flex items-center gap-2">
+                  {activeBook && (
+                    <span className="text-sky-300 font-bold truncate max-w-xs hidden sm:inline" title={activeBook.name}>
+                      {activeBook.name}
+                    </span>
+                  )}
+                  <div className="flex items-center gap-1">
+                    <span>পেজ:</span>
+                    <input
+                      type="text"
+                      value={pdfPageNum}
+                      onChange={(e) => {
+                        const val = parseInt(convertToEnglishDigits(e.target.value));
+                        if (!isNaN(val) && val >= 1 && val <= pdfTotalPages) {
+                          setPdfPageNum(val);
+                        }
+                      }}
+                      className="w-14 px-1 py-0.5 border border-slate-600 rounded text-center text-black font-bold"
+                    />
+                    <span>/ {pdfTotalPages}</span>
+                  </div>
                 </div>
+
                 <button
                   onClick={() => {
                     if (pdfDoc && pdfPageNum < pdfTotalPages) {
-                      const next = pdfPageNum + 1;
-                      setPdfPageNum(next);
-                      renderPdfPage(pdfDoc, next);
+                      setPdfPageNum(pdfPageNum + 1);
                     }
                   }}
-                  className="bg-slate-700 hover:bg-sky-600 px-2.5 py-1 rounded"
+                  className="bg-slate-700 hover:bg-sky-600 px-2.5 py-1 rounded transition-colors"
                 >
                   পরবর্তী পৃষ্ঠা <i className="fa-solid fa-chevron-right ml-1"></i>
                 </button>
@@ -2452,7 +3024,7 @@ export default function App() {
                   <canvas ref={pdfCanvasRef} className="max-w-full shadow-lg rounded" />
                 ) : (
                   <p className="text-gray-400 text-center mt-24 text-sm">
-                    কোনো PDF ফাইল সিলেক্ট করা হয়নি বা প্রিভিউ উপলব্ধ নেই।
+                    কোনো PDF বই সিলেক্ট করা হয়নি বা প্রিভিউ উপলব্ধ নেই।
                   </p>
                 )}
               </div>
@@ -2619,6 +3191,23 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Book History Modal */}
+      <BookHistoryModal
+        isOpen={isBookHistoryOpen}
+        onClose={() => setIsBookHistoryOpen(false)}
+        activeBooks={qcBooks}
+        onRestoreBook={restoreBookFromHistory}
+        onRestoreAll={restoreAllBooksFromHistory}
+        onHistoryUpdated={refreshHistoryCount}
+      />
+
+      {/* Author Profile & System Info Modal */}
+      <AuthorProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        onSelectTab={(tabKey) => setActiveTab(tabKey)}
+      />
     </div>
   );
 }

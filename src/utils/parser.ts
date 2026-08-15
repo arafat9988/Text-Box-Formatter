@@ -32,8 +32,10 @@ export function isSubjectCodeTag(text: string): boolean {
 export function isPageBookRefTag(line: string): boolean {
   if (!line) return false;
   let trimmed = line.trim();
+  if (!trimmed) return false;
   if (/^(?:MQB|TB|PB|Page|Sec|Chap|Ref|INT)[\,\.\-\:\s]/i.test(trimmed)) return true;
-  if (/^[PQ][\,\.\-\:\s]/.test(trimmed)) return true;
+  if (/^[PQ][\,\.\-\:\s\d]/i.test(trimmed)) return true;
+  if (/^(?:ou|বা|or)?\s*(?:Q|q|Question|Prob|Probable)[\,\.\-\:\s\d]/i.test(trimmed)) return true;
   if (/^[A-Za-z0-9_-]+\s*,\s*page\s*[:\-]/i.test(trimmed)) return true;
   if (/^[A-Za-z0-9_-]+\s*,\s*p[\.]?\s*[:\-]/i.test(trimmed)) return true;
   if (/^[A-Za-z0-9_-]+\s+[\d\.\-\/]+\s+p-?\d+/i.test(trimmed)) return true;
@@ -41,6 +43,184 @@ export function isPageBookRefTag(line: string): boolean {
   if (/^(?:কোশ্চেন|প্রশ্ন)\s*ব্যাংক/i.test(trimmed)) return true;
   if (/^(?:পেজ|পৃষ্ঠা|পৃ|P|Page)\s*[\-:\s]*\d+/i.test(trimmed)) return true;
   return false;
+}
+
+export function cleanMergeReferenceLines(rawRef: string): string {
+  if (!rawRef) return "";
+  let lines = rawRef.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length === 0) return "";
+  if (lines.length === 1) {
+    return lines[0].replace(/\s+/g, ' ').trim();
+  }
+
+  let merged = lines[0];
+  for (let i = 1; i < lines.length; i++) {
+    let next = lines[i];
+    if (!next) continue;
+    if (/[,\;:\-\/]$/.test(merged) || /^[,\;:\-\/]/.test(next)) {
+      merged = `${merged} ${next}`;
+    } else {
+      merged = `${merged} ${next}`;
+    }
+  }
+  return merged.replace(/\s+/g, ' ').trim();
+}
+
+export function cleanExplanationText(text: string): string {
+  if (!text) return "";
+  let s = text.trim();
+  let prev = "";
+  // Repeatedly strip leading explanation markers (e.g. "ব্যাখ্যা:", "Exp:", "Expl:", "Explanation:", "বিবরণ:", "Note:", etc.)
+  while (s !== prev) {
+    prev = s;
+    s = s.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]*\s*/gi, '').trim();
+  }
+  return s;
+}
+
+/* ================= HELPER: REPAIR IMPLICIT OPTIONS ================= */
+export function repairImplicitOptions(b: QuestionBlock): void {
+  // Strip trailing "সঠিক উত্তর: [উত্তর]" or "উত্তর: ..." attached to options
+  for (let i = 0; i < 4; i++) {
+    let opt = b.options[i] || '';
+    let ansInlineMatch = opt.match(/(?:\s+|\b)(?:সঠিক উত্তর|উত্তর|Ans|Answer)\s*[:\-]?\s*[\(\（\[]?([ক-ঘa-d])[\)\）\]]?(.*)/i);
+    if (ansInlineMatch) {
+      let optChar = ansInlineMatch[1].toLowerCase();
+      let optIdx = ({'ক': 0, 'a': 0, 'খ': 1, 'b': 1, 'গ': 2, 'c': 2, 'ঘ': 3, 'd': 3} as Record<string, number>)[optChar];
+      if (optIdx !== undefined) {
+        b.correctAnswerIndex = optIdx;
+        b.hasTickMark = true;
+      }
+      b.options[i] = opt.replace(/(?:\s+|\b)(?:সঠিক উত্তর|উত্তর|Ans|Answer)\s*[:\-]?\s*[\(\（\[]?[ক-ঘa-d][\)\）\]]?.*$/i, '').trim();
+    }
+  }
+
+  // If options[3] is empty and explanation is a short non-explanation word/phrase without explanation markers
+  if ((!b.options[3] || !b.options[3].trim()) && b.explanation && b.explanation.trim()) {
+    let exp = b.explanation.trim();
+    let isRealExpl = /^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|বিবরণ|কারণ)[\:\-\—\s]/i.test(exp) || exp.includes('।') || exp.length > 60;
+    if (!isRealExpl) {
+      let emptyIdx = b.options.findIndex(o => !o || !o.trim());
+      if (emptyIdx !== -1) {
+        b.options[emptyIdx] = exp;
+        b.explanation = "";
+      }
+    }
+  }
+
+  const rawOpts = b.options.map(o => (o || '').trim());
+  const filledCount = rawOpts.filter(Boolean).length;
+
+  if (filledCount === 4) {
+    return;
+  }
+
+  // Collect tokens from existing options
+  let allTokens: { text: string; hasTick: boolean }[] = [];
+
+  for (let i = 0; i < 4; i++) {
+    const raw = b.options[i] || '';
+    if (!raw.trim()) continue;
+
+    let parts = raw.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      for (const p of parts) {
+        const hasT = /[✓✔\*√#]/.test(p) || (b.correctAnswerIndex === i && parts.length === 1);
+        const clean = p.replace(/[✓✔\*√#]/g, '').trim();
+        if (clean) allTokens.push({ text: clean, hasTick: hasT });
+      }
+    } else {
+      const hasT = /[✓✔\*√#]/.test(raw) || (b.correctAnswerIndex === i);
+      const clean = raw.replace(/[✓✔\*√#]/g, '').trim();
+      if (clean) allTokens.push({ text: clean, hasTick: hasT });
+    }
+  }
+
+  // If we have fewer than 4 tokens, try splitting tokens with multiple single-spaced words
+  if (allTokens.length < 4 && allTokens.length > 0) {
+    if (allTokens.length === 3) {
+      let splitDone = false;
+      for (let tIdx = 0; tIdx < allTokens.length; tIdx++) {
+        const words = allTokens[tIdx].text.split(/\s+/).filter(Boolean);
+        if (words.length === 2) {
+          const newTokens = [
+            ...allTokens.slice(0, tIdx),
+            { text: words[0], hasTick: allTokens[tIdx].hasTick },
+            { text: words[1], hasTick: false },
+            ...allTokens.slice(tIdx + 1)
+          ];
+          allTokens = newTokens;
+          splitDone = true;
+          break;
+        }
+      }
+      if (!splitDone) {
+        for (let tIdx = 0; tIdx < allTokens.length; tIdx++) {
+          const words = allTokens[tIdx].text.split(/\s+/).filter(Boolean);
+          if (words.length > 2) {
+            const newTokens = [
+              ...allTokens.slice(0, tIdx),
+              { text: words[0], hasTick: allTokens[tIdx].hasTick },
+              { text: words.slice(1).join(' '), hasTick: false },
+              ...allTokens.slice(tIdx + 1)
+            ];
+            allTokens = newTokens;
+            break;
+          }
+        }
+      }
+    } else if (allTokens.length === 2) {
+      let token0Words = allTokens[0].text.split(/\s+/).filter(Boolean);
+      let token1Words = allTokens[1].text.split(/\s+/).filter(Boolean);
+      if (token0Words.length >= 2 && token1Words.length >= 2) {
+        allTokens = [
+          { text: token0Words[0], hasTick: allTokens[0].hasTick },
+          { text: token0Words.slice(1).join(' '), hasTick: false },
+          { text: token1Words[0], hasTick: allTokens[1].hasTick },
+          { text: token1Words.slice(1).join(' '), hasTick: false }
+        ];
+      } else if (token0Words.length === 3 && token1Words.length === 1) {
+        allTokens = [
+          { text: token0Words[0], hasTick: allTokens[0].hasTick },
+          { text: token0Words[1], hasTick: false },
+          { text: token0Words[2], hasTick: false },
+          { text: allTokens[1].text, hasTick: allTokens[1].hasTick }
+        ];
+      } else if (token0Words.length === 1 && token1Words.length === 3) {
+        allTokens = [
+          { text: allTokens[0].text, hasTick: allTokens[0].hasTick },
+          { text: token1Words[0], hasTick: allTokens[1].hasTick },
+          { text: token1Words[1], hasTick: false },
+          { text: token1Words[2], hasTick: false }
+        ];
+      }
+    } else if (allTokens.length === 1) {
+      let words = allTokens[0].text.split(/\s+/).filter(Boolean);
+      if (words.length === 4) {
+        allTokens = [
+          { text: words[0], hasTick: allTokens[0].hasTick },
+          { text: words[1], hasTick: false },
+          { text: words[2], hasTick: false },
+          { text: words[3], hasTick: false }
+        ];
+      }
+    }
+  }
+
+  // Populate b.options with allTokens
+  if (allTokens.length >= 2) {
+    for (let i = 0; i < 4; i++) {
+      if (i < allTokens.length) {
+        b.options[i] = allTokens[i].text.replace(/[✓✔\*√#]/g, '').trim();
+        if (allTokens[i].hasTick) {
+          b.correctAnswerIndex = i;
+          b.hasTickMark = true;
+        }
+      } else {
+        b.options[i] = "";
+      }
+    }
+  }
 }
 
 /* ================= STANDARD PARSER (For Text Box Formatter & Converter) ================= */
@@ -100,11 +280,20 @@ export function parseQuestions(text: string): QuestionBlock[] {
 
   let lines: string[] = [];
   for (let l of processedLines) {
-    let multiOptMatches = l.match(/(?:(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi);
+    let trimmed = l.trim();
+    let multiOptMatches = trimmed.match(/(?:(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi);
     if (multiOptMatches && multiOptMatches.length > 1) {
-      let parts = l.split(/(?=(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
+      let parts = trimmed.split(/(?=(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
       lines.push(...parts);
     } else {
+      let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(trimmed);
+      let tabOrSpaceParts = trimmed.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+      if (!isQStart && !checkIsRefTag(trimmed) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
+        if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
+          lines.push(...tabOrSpaceParts);
+          continue;
+        }
+      }
       lines.push(l);
     }
   }
@@ -147,7 +336,7 @@ export function parseQuestions(text: string): QuestionBlock[] {
   };
 
   const isExplanationStart = (line: string): boolean => {
-    return /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|বিশেষ দ্রষ্টব্য)[\:\-\s]/i.test(line);
+    return /^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i.test(line);
   };
 
   const extractQNum = (line: string) => {
@@ -220,7 +409,7 @@ export function parseQuestions(text: string): QuestionBlock[] {
 
       let initialRefBefore = "";
       if (pendingHeaderRefs.length > 0) {
-        initialRefBefore = pendingHeaderRefs.join("\n");
+        initialRefBefore = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
         pendingHeaderRefs = [];
       }
 
@@ -302,12 +491,12 @@ export function parseQuestions(text: string): QuestionBlock[] {
         let cleanRef = cleanLine.replace(/^[\[\（\(]/, '').replace(/[\]\）\)]$/, '').trim();
         if (isPageBookRefTag(cleanLine) || /^(?:MQB|TB|PB|P|Page|Sec|Chap|Ref)[\,\.\-\:\s]/i.test(cleanLine)) {
           if (lastActiveField === 'explanation' || currentBlock.options.some(o => o !== "")) {
-            currentBlock.outsideRefAfter = currentBlock.outsideRefAfter ? currentBlock.outsideRefAfter + "\n" + cleanRef : cleanRef;
+            currentBlock.outsideRefAfter = currentBlock.outsideRefAfter ? cleanMergeReferenceLines(currentBlock.outsideRefAfter + " " + cleanRef) : cleanRef;
           } else {
-            currentBlock.outsideRefBefore = currentBlock.outsideRefBefore ? currentBlock.outsideRefBefore + "\n" + cleanRef : cleanRef;
+            currentBlock.outsideRefBefore = currentBlock.outsideRefBefore ? cleanMergeReferenceLines(currentBlock.outsideRefBefore + " " + cleanRef) : cleanRef;
           }
         } else {
-          currentBlock.reference = cleanRef;
+          currentBlock.reference = cleanMergeReferenceLines(currentBlock.reference ? currentBlock.reference + " " + cleanRef : cleanRef);
         }
       }
       continue;
@@ -415,16 +604,18 @@ export function parseQuestions(text: string): QuestionBlock[] {
 
   if (currentBlock) {
     if (pendingHeaderRefs.length > 0) {
+      let mergedPending = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
       currentBlock.outsideRefAfter = currentBlock.outsideRefAfter
-        ? currentBlock.outsideRefAfter + "\n" + pendingHeaderRefs.join("\n")
-        : pendingHeaderRefs.join("\n");
+        ? cleanMergeReferenceLines(currentBlock.outsideRefAfter + " " + mergedPending)
+        : mergedPending;
       pendingHeaderRefs = [];
     }
     blocks.push(currentBlock);
   } else if (pendingHeaderRefs.length > 0 && blocks.length > 0) {
+    let mergedPending = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
     blocks[blocks.length - 1].outsideRefAfter = blocks[blocks.length - 1].outsideRefAfter
-      ? blocks[blocks.length - 1].outsideRefAfter + "\n" + pendingHeaderRefs.join("\n")
-      : pendingHeaderRefs.join("\n");
+      ? cleanMergeReferenceLines(blocks[blocks.length - 1].outsideRefAfter + " " + mergedPending)
+      : mergedPending;
     pendingHeaderRefs = [];
   }
 
@@ -473,6 +664,9 @@ export function parseQuestions(text: string): QuestionBlock[] {
       }
     }
 
+    // Automatically repair and separate merged/implicit options into individual boxes
+    repairImplicitOptions(b);
+
     for (let i = 0; i < 4; i++) {
       if (b.options[i]) {
         b.options[i] = b.options[i].replace(/[✓✔\*√#]/g, '').trim();
@@ -481,7 +675,7 @@ export function parseQuestions(text: string): QuestionBlock[] {
     
     b.questionText = (b.questionText || "").replace(/[✓✔\*√#]/g, '').trim();
     if (b.explanation) {
-      b.explanation = b.explanation.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|Explanation|Expl|বিবরণ)[\:\-\—\s]*\s*/gi, '').trim();
+      b.explanation = cleanExplanationText(b.explanation);
     }
   });
 
@@ -570,11 +764,20 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
 
   let lines: string[] = [];
   for (let l of processedLines) {
-    let multiOptMatches = l.match(/(?:(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi);
+    let trimmed = l.trim();
+    let multiOptMatches = trimmed.match(/(?:(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi);
     if (multiOptMatches && multiOptMatches.length > 1) {
-      let parts = l.split(/(?=(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
+      let parts = trimmed.split(/(?=(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
       lines.push(...parts);
     } else {
+      let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(trimmed);
+      let tabOrSpaceParts = trimmed.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+      if (!isQStart && !checkIsRefTag(trimmed) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
+        if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
+          lines.push(...tabOrSpaceParts);
+          continue;
+        }
+      }
       lines.push(l);
     }
   }
@@ -669,7 +872,7 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
   };
 
   const isExplanationStart = (line: string): boolean => {
-    return /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|বিশেষ দ্রষ্টব্য)[\:\-\s]/i.test(line);
+    return /^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i.test(line);
   };
 
   const extractQNum = (line: string) => {
@@ -739,7 +942,7 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
 
       let initialRefBefore = "";
       if (pendingHeaderRefs.length > 0) {
-        initialRefBefore = pendingHeaderRefs.join("\n");
+        initialRefBefore = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
         pendingHeaderRefs = [];
       }
 
@@ -821,12 +1024,12 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
         let cleanRef = cleanLine.replace(/^[\[\（\(]/, '').replace(/[\]\）\)]$/, '').trim();
         if (isPageBookRefTag(cleanLine) || /^(?:MQB|TB|PB|P|Page|Sec|Chap|Ref)[\,\.\-\:\s]/i.test(cleanLine)) {
           if (lastActiveField === 'explanation' || currentBlock.options.some(o => o !== "")) {
-            currentBlock.outsideRefAfter = currentBlock.outsideRefAfter ? currentBlock.outsideRefAfter + "\n" + cleanRef : cleanRef;
+            currentBlock.outsideRefAfter = currentBlock.outsideRefAfter ? cleanMergeReferenceLines(currentBlock.outsideRefAfter + " " + cleanRef) : cleanRef;
           } else {
-            currentBlock.outsideRefBefore = currentBlock.outsideRefBefore ? currentBlock.outsideRefBefore + "\n" + cleanRef : cleanRef;
+            currentBlock.outsideRefBefore = currentBlock.outsideRefBefore ? cleanMergeReferenceLines(currentBlock.outsideRefBefore + " " + cleanRef) : cleanRef;
           }
         } else {
-          currentBlock.reference = cleanRef;
+          currentBlock.reference = cleanMergeReferenceLines(currentBlock.reference ? currentBlock.reference + " " + cleanRef : cleanRef);
         }
       }
       continue;
@@ -931,16 +1134,18 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
 
   if (currentBlock) {
     if (pendingHeaderRefs.length > 0) {
+      let mergedPending = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
       currentBlock.outsideRefAfter = currentBlock.outsideRefAfter
-        ? currentBlock.outsideRefAfter + "\n" + pendingHeaderRefs.join("\n")
-        : pendingHeaderRefs.join("\n");
+        ? cleanMergeReferenceLines(currentBlock.outsideRefAfter + " " + mergedPending)
+        : mergedPending;
       pendingHeaderRefs = [];
     }
     blocks.push(currentBlock);
   } else if (pendingHeaderRefs.length > 0 && blocks.length > 0) {
+    let mergedPending = cleanMergeReferenceLines(pendingHeaderRefs.join(" "));
     blocks[blocks.length - 1].outsideRefAfter = blocks[blocks.length - 1].outsideRefAfter
-      ? blocks[blocks.length - 1].outsideRefAfter + "\n" + pendingHeaderRefs.join("\n")
-      : pendingHeaderRefs.join("\n");
+      ? cleanMergeReferenceLines(blocks[blocks.length - 1].outsideRefAfter + " " + mergedPending)
+      : mergedPending;
     pendingHeaderRefs = [];
   }
 
@@ -1016,7 +1221,7 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
         b.outsideRefAfter = b.outsideRefAfter ? b.outsideRefAfter + "\n" + expVal : expVal;
         b.explanation = "";
       } else {
-        b.explanation = expVal.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|Explanation|Expl|বিবরণ)[\:\-\—\s]*\s*/gi, '').trim();
+        b.explanation = cleanExplanationText(expVal);
       }
     }
 
@@ -1039,6 +1244,9 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
       }
       b.questionText = newQLines.join('\n').trim();
     }
+
+    // Automatically repair and separate merged/implicit options into individual boxes
+    repairImplicitOptions(b);
 
     for (let i = 0; i < 4; i++) {
       if (b.options[i]) {
@@ -1112,27 +1320,27 @@ export function generateFormattedTableHtml(
 
     let combinedBefore = "";
     if (block.outsideRefBefore && block.outsideRefBefore.trim()) {
-      combinedBefore = block.outsideRefBefore;
+      combinedBefore = cleanMergeReferenceLines(block.outsideRefBefore);
     }
     if (block.outsideRefAfter && block.outsideRefAfter.trim()) {
-      combinedBefore = combinedBefore ? combinedBefore + "\n" + block.outsideRefAfter : block.outsideRefAfter;
+      combinedBefore = combinedBefore ? cleanMergeReferenceLines(combinedBefore + " " + block.outsideRefAfter) : cleanMergeReferenceLines(block.outsideRefAfter);
     }
     if (block.reference && block.reference.trim()) {
       let refText = `[${block.reference.trim()}]`;
-      combinedBefore = combinedBefore ? combinedBefore + "\n" + refText : refText;
+      combinedBefore = combinedBefore ? cleanMergeReferenceLines(combinedBefore + " " + refText) : refText;
     }
 
     if (combinedBefore && combinedBefore.trim()) {
-      let linesBefore = combinedBefore.split('\n').filter(l => l.trim());
-      let formattedRefBefore = linesBefore.map(l => formatHtmlTextPiece(l.trim(), fontType, customDictStr)).join('<br/>');
-      tableHtml += `<p align="left" style="margin: 4px 0; padding: 0; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: normal; line-height: 1.2; text-align: left;">${formattedRefBefore}</p>`;
+      let mergedRef = cleanMergeReferenceLines(combinedBefore);
+      let formattedRefBefore = formatHtmlTextPiece(mergedRef, fontType, customDictStr);
+      tableHtml += `<p align="left" style="margin: 0; padding: 0; margin-top: 0; margin-bottom: 2px; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: normal; line-height: 1.2; text-align: left;">${formattedRefBefore}</p>`;
     }
 
-    tableHtml += `<table style="width: 100%; table-layout: fixed; border-collapse: collapse; border: 1px solid #000; background: transparent !important; margin-bottom: 12px; word-break: break-word; overflow-wrap: break-word;">`;
+    tableHtml += `<table style="width: 100%; table-layout: fixed; border-collapse: collapse; border: 1px solid #000; background: transparent !important; margin-bottom: 2px; word-break: break-word; overflow-wrap: break-word;">`;
     
     let effSubject = block.subjectCode || subjectCode || 'GK';
     let formattedCorrectLetter = correctLetter ? `<span class="eng-text" style="font-family: Times New Roman, 'Times New Roman', serif;">${correctLetter}</span>` : "";
-    let cleanExpl = (block.explanation || "").replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|Explanation|Expl|বিবরণ)[\:\-\—\s]*\s*/gi, '').trim();
+    let cleanExpl = cleanExplanationText(block.explanation || "");
 
     if (!alignRight) {
       // Row 1: Question Number | Subject Code
@@ -1219,7 +1427,17 @@ export function generateFormattedTableHtml(
 
     tableHtml += `</table>`;
 
-    tableHtml += `<p style="margin: 0; padding: 0; height: 10px; line-height: 10px; font-size: 1px;">&nbsp;</p>`;
+    // Only add a separator paragraph if this is not the last table AND the next table has no reference (which already acts as a separator)
+    const nextBlock = blocks[index + 1];
+    const nextHasRef = nextBlock && (
+      (nextBlock.outsideRefBefore && nextBlock.outsideRefBefore.trim()) ||
+      (nextBlock.outsideRefAfter && nextBlock.outsideRefAfter.trim()) ||
+      (nextBlock.reference && nextBlock.reference.trim())
+    );
+
+    if (index < blocks.length - 1 && !nextHasRef) {
+      tableHtml += `<p style="margin: 0; padding: 0; height: 6px; line-height: 6px; font-size: 1px;">&nbsp;</p>`;
+    }
 
     outputHtml += tableHtml;
   });
@@ -1352,20 +1570,20 @@ export function generateVersionFormattedTableHtml(
 
     let combinedBefore = "";
     if (block.outsideRefBefore && block.outsideRefBefore.trim()) {
-      combinedBefore = block.outsideRefBefore;
+      combinedBefore = cleanMergeReferenceLines(block.outsideRefBefore);
     }
     if (block.reference && block.reference.trim()) {
       let refText = `[${block.reference.trim()}]`;
-      combinedBefore = combinedBefore ? combinedBefore + "\n" + refText : refText;
+      combinedBefore = combinedBefore ? cleanMergeReferenceLines(combinedBefore + " " + refText) : refText;
     }
 
     if (combinedBefore && combinedBefore.trim()) {
-      let linesBefore = combinedBefore.split('\n').filter(l => l.trim());
-      let formattedRefBefore = linesBefore.map(l => formatHtmlTextPiece(l.trim(), fontType, customDictStr)).join('<br/>');
-      tableHtml += `<p align="center" style="margin: 4px 0; padding: 0; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: bold; line-height: 1.2; text-align: center;">${formattedRefBefore}</p>`;
+      let mergedRef = cleanMergeReferenceLines(combinedBefore);
+      let formattedRefBefore = formatHtmlTextPiece(mergedRef, fontType, customDictStr);
+      tableHtml += `<p align="center" style="margin: 0; padding: 0; margin-top: 0; margin-bottom: 2px; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: bold; line-height: 1.2; text-align: center;">${formattedRefBefore}</p>`;
     }
 
-    tableHtml += `<table style="width: 100%; table-layout: fixed; border-collapse: collapse; border: 1px solid #000; background: transparent !important; margin-bottom: 12px; word-break: break-word; overflow-wrap: break-word;">`;
+    tableHtml += `<table style="width: 100%; table-layout: fixed; border-collapse: collapse; border: 1px solid #000; background: transparent !important; margin-bottom: 2px; word-break: break-word; overflow-wrap: break-word;">`;
     
     let effSubject = block.subjectCode || subjectCode || 'GK';
 
@@ -1429,9 +1647,16 @@ export function generateVersionFormattedTableHtml(
 
     if (block.outsideRefAfter && block.outsideRefAfter.trim()) {
       let formattedRefAfter = formatHtmlTextPiece(block.outsideRefAfter, fontType, customDictStr);
-      tableHtml += `<p style="margin: 4px 0 12px 0; padding: 0; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: normal; line-height: 1.2;">${formattedRefAfter}</p>`;
+      tableHtml += `<p style="margin: 0; padding: 0; margin-top: 2px; margin-bottom: 2px; font-family: Times New Roman, 'Times New Roman', serif; font-size: 10pt; font-weight: normal; line-height: 1.2;">${formattedRefAfter}</p>`;
     } else {
-      tableHtml += `<p style="margin: 0; padding: 0; height: 10px; line-height: 10px; font-size: 1px;">&nbsp;</p>`;
+      const nextBlock = origBlocks[index + 1];
+      const nextHasRef = nextBlock && (
+        (nextBlock.outsideRefBefore && nextBlock.outsideRefBefore.trim()) ||
+        (nextBlock.reference && nextBlock.reference.trim())
+      );
+      if (index < origBlocks.length - 1 && !nextHasRef) {
+        tableHtml += `<p style="margin: 0; padding: 0; height: 6px; line-height: 6px; font-size: 1px;">&nbsp;</p>`;
+      }
     }
 
     outputHtml += tableHtml;
@@ -1468,13 +1693,12 @@ export function formatConverterTextOutput(rawText: string): string {
       }
     });
     if (item.explanation && item.explanation.trim()) {
-      let expText = item.explanation.trim();
-      let isJustAnsTag = /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer)?[\:\-\s]*[\(\（\[]?[ক-ঘa-d1-4১-৪0-4][\)\）\]]?\s*$/i.test(expText);
-      if (!isJustAnsTag) {
-        if (!/^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer)[\:\-\s]/i.test(expText)) {
-          expText = `ব্যাখ্যা: ${expText}`;
+      let expText = cleanExplanationText(item.explanation);
+      if (expText) {
+        let isJustAnsTag = /^\s*[\(\（\[]?[ক-ঘa-d1-4১-৪0-4][\)\）\]]?\s*$/i.test(expText);
+        if (!isJustAnsTag) {
+          resultStr += `ব্যাখ্যা: ${expText}\n`;
         }
-        resultStr += `${expText}\n`;
       }
     }
     if (item.outsideRefAfter && item.outsideRefAfter.trim()) {

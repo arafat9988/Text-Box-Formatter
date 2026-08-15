@@ -179,6 +179,16 @@ export const ChatTab: React.FC = () => {
   const [copyStatus, setCopyStatus] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState<boolean>(false);
   const [historySearch, setHistorySearch] = useState<string>('');
+  const [showClearConfirm, setShowClearConfirm] = useState<boolean>(false);
+  const [downloadingSessionId, setDownloadingSessionId] = useState<string | null>(null);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => {
+      setToastMsg((prev) => (prev === msg ? null : prev));
+    }, 2500);
+  };
 
   // Book Reserve State
   const [reservedBooks, setReservedBooks] = useState<ReservedBook[]>([]);
@@ -229,6 +239,8 @@ export const ChatTab: React.FC = () => {
         minute: '2-digit'
       });
 
+      const hasUserMessage = safeMessages.some((m) => m.role === 'user');
+
       setSessions((prev) => {
         const existingIdx = prev.findIndex((s) => s.id === activeSessionId);
         let updated: ChatSession[];
@@ -240,7 +252,7 @@ export const ChatTab: React.FC = () => {
             updatedAt: Date.now(),
             messages: safeMessages
           };
-        } else {
+        } else if (hasUserMessage) {
           updated = [
             {
               id: activeSessionId,
@@ -251,6 +263,8 @@ export const ChatTab: React.FC = () => {
             },
             ...prev
           ];
+        } else {
+          return prev;
         }
 
         try {
@@ -279,6 +293,7 @@ export const ChatTab: React.FC = () => {
     setSelectedFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setShowHistory(false);
+    setShowClearConfirm(false);
   };
 
   const handleLoadSession = (session: ChatSession) => {
@@ -292,6 +307,7 @@ export const ChatTab: React.FC = () => {
 
   const handleDeleteSession = (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
     const updated = sessions.filter((s) => s.id !== sessionId);
     setSessions(updated);
     try {
@@ -302,37 +318,66 @@ export const ChatTab: React.FC = () => {
 
     if (sessionId === activeSessionId) {
       if (updated.length > 0) {
-        handleLoadSession(updated[0]);
+        setActiveSessionId(updated[0].id);
+        setMessages(updated[0].messages && updated[0].messages.length > 0 ? updated[0].messages : [createDefaultWelcomeMsg()]);
+        setInput('');
+        setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
       } else {
-        handleStartNewChat();
+        const newId = 'session-' + Date.now();
+        const defaultMsg = createDefaultWelcomeMsg();
+        setActiveSessionId(newId);
+        setMessages([defaultMsg]);
+        setInput('');
+        setSelectedFile(null);
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
     }
+    showToast('হিস্ট্রি মুছে ফেলা হয়েছে');
   };
 
   const handleClearAllHistory = () => {
-    if (window.confirm('আপনি কি নিশ্চিত যে সমস্ত চ্যাট হিস্ট্রি মুছে ফেলতে চান?')) {
-      setSessions([]);
-      try {
-        localStorage.removeItem('gemini_chat_sessions');
-      } catch (err) {
-        console.error('Failed to clear sessions', err);
-      }
-      handleStartNewChat();
+    setShowClearConfirm(true);
+  };
+
+  const executeClearAllHistory = () => {
+    setSessions([]);
+    try {
+      localStorage.removeItem('gemini_chat_sessions');
+      localStorage.removeItem('gemini_chat_messages');
+      localStorage.removeItem('gemini_active_session_id');
+    } catch (err) {
+      console.error('Failed to clear sessions', err);
     }
+    const newId = 'session-' + Date.now();
+    const defaultMsg = createDefaultWelcomeMsg();
+    setActiveSessionId(newId);
+    setMessages([defaultMsg]);
+    setInput('');
+    setSelectedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    setShowClearConfirm(false);
+    showToast('সকল চ্যাট হিস্ট্রি মুছে ফেলা হয়েছে');
   };
 
   const handleDownloadSessionDocx = async (session: ChatSession, e: React.MouseEvent) => {
     e.stopPropagation();
+    e.preventDefault();
+    setDownloadingSessionId(session.id);
     try {
-      const fullText = session.messages
+      const msgs = session.messages && session.messages.length > 0 ? session.messages : messages;
+      const fullText = msgs
         .map((m) => `${m.role === 'user' ? '👤 User:' : '✨ Gemini AI:'}\n${m.text}\n`)
         .join('\n---\n\n');
-      const safeTitle = session.title.replace(/[^a-zA-Z0-9\u0980-\u09FF]/g, '_').slice(0, 30);
+      const safeTitle = (session.title || 'Gemini_Chat').replace(/[^a-zA-Z0-9\u0980-\u09FF]/g, '_').slice(0, 30);
       const filename = `${safeTitle || 'Gemini_Chat'}_${new Date().toISOString().slice(0, 10)}.docx`;
       await downloadAsDocx(fullText, filename);
+      showToast('DOCX ডাউনলোড সম্পন্ন হয়েছে');
     } catch (error) {
       console.error('Docx download error:', error);
-      alert('DOCX ফাইল তৈরি করতে সমস্যা হয়েছে।');
+      showToast('ডাউনলোড করতে সমস্যা হয়েছে');
+    } finally {
+      setDownloadingSessionId(null);
     }
   };
 
@@ -650,9 +695,10 @@ export const ChatTab: React.FC = () => {
     try {
       const filename = `Gemini_Chat_${new Date().toISOString().slice(0, 10)}.docx`;
       await downloadAsDocx(text, filename);
+      showToast('Word ফাইল (.docx) ডাউনলোড সম্পন্ন হয়েছে');
     } catch (error) {
       console.error('Docx download error:', error);
-      alert('DOCX ফাইল তৈরি করতে সমস্যা হয়েছে।');
+      showToast('DOCX ডাউনলোড করতে সমস্যা হয়েছে');
     }
   };
 
@@ -661,7 +707,8 @@ export const ChatTab: React.FC = () => {
     'বিজয় ৫২ ফন্ট ও ইউনিকোড ফন্টের মূল পার্থক্য বুঝিয়ে বলুন',
     '১০টি উচ্চমাধ্যমিক বাংলা ব্যাকরণের MCQ প্রশ্ন তৈরি করে দিন',
     'একটি বাংলা অনুচ্ছেদ ইংরেজিতে ভাবানুবাদ করুন',
-    'এমসিকিউ প্রশ্নের সঠিক উত্তর কীভাবে সহজে চিহ্নি করা যায়?'
+    'এমসিকিউ প্রশ্নের সঠিক উত্তর কীভাবে সহজে চিহ্নিত করা যায়?',
+    'ফরম্যাটের সমস্যা সমাধান করে দাও'
   ];
 
   const filteredSessions = sessions.filter((s) => {
@@ -679,6 +726,14 @@ export const ChatTab: React.FC = () => {
       onDrop={handleDrop}
       className="relative flex flex-col h-[650px] bg-slate-50 rounded-xl border border-gray-200 overflow-hidden shadow-sm"
     >
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 bg-gray-900/90 text-white text-xs px-4 py-2 rounded-full shadow-lg flex items-center gap-2 backdrop-blur-xs animate-fadeIn border border-gray-700">
+          <i className="fa-solid fa-circle-check text-emerald-400"></i>
+          <span className="font-medium">{toastMsg}</span>
+        </div>
+      )}
+
       {/* Drag & Drop Visual Overlay */}
       {isDragging && (
         <div className="absolute inset-0 z-40 bg-indigo-900/80 backdrop-blur-xs flex flex-col items-center justify-center text-white border-4 border-dashed border-indigo-300 m-2 rounded-xl transition animate-fadeIn">
@@ -811,25 +866,53 @@ export const ChatTab: React.FC = () => {
                 )}
               </div>
 
-              <div className="flex items-center justify-between pt-1">
-                <button
-                  onClick={handleStartNewChat}
-                  className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer border border-indigo-200"
-                >
-                  <i className="fa-solid fa-plus text-[10px]"></i>
-                  নতুন কথোপকথন শুরু
-                </button>
-
-                {sessions.length > 0 && (
+              {showClearConfirm ? (
+                <div className="bg-red-50 border border-red-200 rounded-lg p-2.5 my-1 text-xs">
+                  <p className="font-bold text-red-900 mb-2 flex items-center gap-1.5">
+                    <i className="fa-solid fa-triangle-exclamation text-red-600"></i>
+                    আপনি কি নিশ্চিত যে সমস্ত চ্যাট হিস্ট্রি মুছে ফেলতে চান?
+                  </p>
+                  <div className="flex items-center gap-2 justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setShowClearConfirm(false)}
+                      className="px-2.5 py-1 bg-white border border-gray-300 text-gray-700 rounded text-xs font-semibold hover:bg-gray-100 cursor-pointer transition"
+                    >
+                      বাতিল
+                    </button>
+                    <button
+                      type="button"
+                      onClick={executeClearAllHistory}
+                      className="px-2.5 py-1 bg-red-600 text-white rounded text-xs font-bold hover:bg-red-700 cursor-pointer shadow-xs flex items-center gap-1 transition"
+                    >
+                      <i className="fa-solid fa-trash-can text-[10px]"></i>
+                      হ্যাঁ, সব মুছুন
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between pt-1">
                   <button
-                    onClick={handleClearAllHistory}
-                    className="text-[11px] text-red-600 hover:text-red-700 hover:underline transition flex items-center gap-1 cursor-pointer"
+                    type="button"
+                    onClick={handleStartNewChat}
+                    className="text-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-semibold px-2.5 py-1 rounded-md transition flex items-center gap-1 cursor-pointer border border-indigo-200"
                   >
-                    <i className="fa-solid fa-trash text-[10px]"></i>
-                    সব হিস্ট্রি মুছুন
+                    <i className="fa-solid fa-plus text-[10px]"></i>
+                    নতুন কথোপকথন শুরু
                   </button>
-                )}
-              </div>
+
+                  {sessions.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={handleClearAllHistory}
+                      className="text-[11px] text-red-600 hover:text-red-700 hover:underline transition flex items-center gap-1 cursor-pointer font-medium"
+                    >
+                      <i className="fa-solid fa-trash-can text-[10px]"></i>
+                      সব হিস্ট্রি মুছুন
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Sessions List */}
@@ -893,15 +976,22 @@ export const ChatTab: React.FC = () => {
 
                         <div className="flex items-center gap-1.5">
                           <button
+                            type="button"
                             onClick={(e) => handleDownloadSessionDocx(session, e)}
-                            className="p-1 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition cursor-pointer"
+                            disabled={downloadingSessionId === session.id}
+                            className="p-1.5 text-gray-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-md transition cursor-pointer border border-gray-200 hover:border-emerald-300 bg-white"
                             title="সম্পূর্ণ কথোপকথন DOCX হিসেবে ডাউনলোড করুন"
                           >
-                            <i className="fa-solid fa-download text-xs"></i>
+                            {downloadingSessionId === session.id ? (
+                              <i className="fa-solid fa-spinner animate-spin text-xs text-emerald-600"></i>
+                            ) : (
+                              <i className="fa-solid fa-download text-xs"></i>
+                            )}
                           </button>
                           <button
+                            type="button"
                             onClick={(e) => handleDeleteSession(session.id, e)}
-                            className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded transition cursor-pointer"
+                            className="p-1.5 text-gray-500 hover:text-red-700 hover:bg-red-50 rounded-md transition cursor-pointer border border-gray-200 hover:border-red-300 bg-white"
                             title="এই হিস্ট্রি মুছে ফেলুন"
                           >
                             <i className="fa-solid fa-trash-can text-xs"></i>
