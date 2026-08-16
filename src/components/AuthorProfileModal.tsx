@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React from 'react';
 
 export type AppTabType = 'converter' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat';
 
@@ -8,97 +8,11 @@ interface AuthorProfileModalProps {
   onSelectTab?: (tabKey: AppTabType) => void;
 }
 
-const DEFAULT_PHOTO = '/arafat_profile.jpg?v=4';
-
 export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
   isOpen,
   onClose,
   onSelectTab
 }) => {
-  const [isImageViewerOpen, setIsImageViewerOpen] = useState<boolean>(false);
-  const [isPhotoMenuOpen, setIsPhotoMenuOpen] = useState<boolean>(false);
-  const [isCameraActive, setIsCameraActive] = useState<boolean>(false);
-  const [cameraError, setCameraError] = useState<string | null>(null);
-
-  const [profilePhoto, setProfilePhoto] = useState<string>(() => {
-    return localStorage.getItem('user_custom_profile_photo') || DEFAULT_PHOTO;
-  });
-
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-
-  // Stop camera when modal unmounts or camera deactivates
-  useEffect(() => {
-    if (isCameraActive) {
-      navigator.mediaDevices?.getUserMedia({ video: { facingMode: 'user' } })
-        .then((stream) => {
-          mediaStreamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-          }
-        })
-        .catch((err) => {
-          console.error("Camera error:", err);
-          setCameraError("ক্যামেরা এক্সেস সম্ভব হয়নি। অনুগ্রহ করে ব্রাউজার পারমিশন চেক করুন।");
-        });
-    } else {
-      stopCamera();
-    }
-    return () => {
-      stopCamera();
-    };
-  }, [isCameraActive]);
-
-  const stopCamera = () => {
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
-      mediaStreamRef.current = null;
-    }
-  };
-
-  const handleUploadPhotoClick = () => {
-    setIsPhotoMenuOpen(false);
-    fileInputRef.current?.click();
-  };
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          setProfilePhoto(reader.result);
-          localStorage.setItem('user_custom_profile_photo', reader.result);
-        }
-      };
-      reader.readAsDataURL(file);
-    }
-  };
-
-  const handleRemovePhoto = () => {
-    setProfilePhoto(DEFAULT_PHOTO);
-    localStorage.removeItem('user_custom_profile_photo');
-    setIsPhotoMenuOpen(false);
-  };
-
-  const captureCameraPhoto = () => {
-    if (videoRef.current) {
-      const video = videoRef.current;
-      const canvas = document.createElement('canvas');
-      canvas.width = video.videoWidth || 640;
-      canvas.height = video.videoHeight || 480;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-        setProfilePhoto(dataUrl);
-        localStorage.setItem('user_custom_profile_photo', dataUrl);
-        setIsCameraActive(false);
-      }
-    }
-  };
-
   if (!isOpen) return null;
 
   const featuresList: {
@@ -167,7 +81,7 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
                 Bangla English Fixer - সিস্টেম পরিচিতি ও টিম প্রোফাইল
               </h2>
               <p className="text-xs text-indigo-200 font-medium">
-                Website Creator & Developer Arafat Kazi Profile • সিস্টেম ম্যানুয়াল ও বিবরণী
+                arafat-3802-bangla-english-fixer • সিস্টেম ম্যানুয়াল ও বিবরণী
               </p>
             </div>
           </div>
@@ -185,99 +99,20 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
           
           {/* Author Profile Card */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-xs flex flex-col sm:flex-row items-center sm:items-start gap-5">
-            {/* Profile Image & Camera Interactive Popover Menu */}
-            <div className="relative shrink-0 flex flex-col items-center">
-              {/* Hidden file input for Upload photo */}
-              <input
-                type="file"
-                ref={fileInputRef}
-                accept="image/*"
-                onChange={handleFileChange}
-                className="hidden"
+            {/* Profile Image */}
+            <div className="relative shrink-0">
+              <img
+                src="/arafat_profile.jpg"
+                alt="MD. Arafat Kazi"
+                className="w-28 h-32 sm:w-32 sm:h-36 rounded-xl object-cover border-2 border-indigo-200 shadow-md"
+                onError={(e) => {
+                  // Fallback avatar if image fails
+                  (e.target as HTMLElement).style.display = 'none';
+                }}
               />
-
-              <div className="relative group">
-                <div
-                  className="w-32 h-32 sm:w-36 sm:h-36 rounded-full overflow-hidden border-4 border-indigo-200 shadow-md relative bg-slate-900 cursor-pointer transition-all hover:border-indigo-500"
-                  onClick={() => setIsPhotoMenuOpen(!isPhotoMenuOpen)}
-                  title="ফটো অপশনস দেখতে ক্লিক করুন"
-                >
-                  <img
-                    src={profilePhoto}
-                    alt="MD. Arafat Kazi"
-                    className="w-full h-full object-cover object-top transition-transform duration-300 group-hover:scale-105"
-                    onError={(e) => {
-                      (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=300&auto=format&fit=crop&q=80';
-                    }}
-                  />
-                  {/* Camera Overlay Icon Badge */}
-                  <div className="absolute inset-0 bg-black/35 group-hover:bg-black/50 transition-colors flex items-center justify-center text-white">
-                    <div className="w-12 h-12 rounded-full bg-slate-900/80 border border-white/40 flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
-                      <i className="fa-solid fa-camera text-xl text-white"></i>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="absolute -bottom-1 -right-1 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full border-2 border-white shadow-xs z-10">
-                  Pin: 3802
-                </div>
+              <div className="absolute -bottom-2 -right-2 bg-indigo-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full border border-white shadow-xs">
+                Pin: 3802
               </div>
-
-              {/* Photo Options Popover Menu */}
-              {isPhotoMenuOpen && (
-                <>
-                  <div
-                    className="fixed inset-0 z-40"
-                    onClick={() => setIsPhotoMenuOpen(false)}
-                  />
-                  <div className="absolute top-full mt-3 z-50 w-52 bg-slate-900 text-slate-100 rounded-2xl p-2 shadow-2xl border border-slate-700 animate-in fade-in zoom-in-95 duration-150">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsPhotoMenuOpen(false);
-                        setIsImageViewerOpen(true);
-                      }}
-                      className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-xl flex items-center gap-3 text-xs font-semibold transition-colors cursor-pointer text-slate-200"
-                    >
-                      <i className="fa-regular fa-eye text-base text-indigo-400 w-5 text-center"></i>
-                      <span>View photo</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsPhotoMenuOpen(false);
-                        setCameraError(null);
-                        setIsCameraActive(true);
-                      }}
-                      className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-xl flex items-center gap-3 text-xs font-semibold transition-colors cursor-pointer text-slate-200"
-                    >
-                      <i className="fa-solid fa-camera text-base text-emerald-400 w-5 text-center"></i>
-                      <span>Take photo</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleUploadPhotoClick}
-                      className="w-full text-left px-3 py-2.5 hover:bg-slate-800 rounded-xl flex items-center gap-3 text-xs font-semibold transition-colors cursor-pointer text-slate-200"
-                    >
-                      <i className="fa-regular fa-folder-open text-base text-amber-400 w-5 text-center"></i>
-                      <span>Upload photo</span>
-                    </button>
-
-                    <hr className="border-slate-800 my-1.5" />
-
-                    <button
-                      type="button"
-                      onClick={handleRemovePhoto}
-                      className="w-full text-left px-3 py-2.5 hover:bg-red-500/20 text-red-400 hover:text-red-300 rounded-xl flex items-center gap-3 text-xs font-semibold transition-colors cursor-pointer"
-                    >
-                      <i className="fa-regular fa-trash-can text-base text-red-400 w-5 text-center"></i>
-                      <span>Remove photo</span>
-                    </button>
-                  </div>
-                </>
-              )}
             </div>
 
             {/* Profile Info Details */}
@@ -428,115 +263,6 @@ export const AuthorProfileModal: React.FC<AuthorProfileModalProps> = ({
         </div>
 
       </div>
-
-      {/* Live Camera Capture Modal */}
-      {isCameraActive && (
-        <div
-          className="fixed inset-0 z-70 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200"
-          onClick={() => setIsCameraActive(false)}
-        >
-          <div
-            className="relative w-full max-w-md bg-slate-900 rounded-2xl p-5 border border-slate-700 shadow-2xl flex flex-col items-center gap-4"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="w-full flex items-center justify-between pb-3 border-b border-slate-800">
-              <div className="flex items-center gap-2 text-white font-bold text-sm">
-                <i className="fa-solid fa-camera text-indigo-400"></i>
-                <span>ক্যামেরা দিয়ে ছবি তুলুন (Take Photo)</span>
-              </div>
-              <button
-                onClick={() => setIsCameraActive(false)}
-                className="w-8 h-8 rounded-full bg-slate-800 hover:bg-red-600 text-white flex items-center justify-center transition-colors font-bold text-sm"
-              >
-                ✕
-              </button>
-            </div>
-
-            {cameraError ? (
-              <div className="text-center py-8 text-red-400 text-xs px-4">
-                <i className="fa-solid fa-triangle-exclamation text-3xl mb-3 text-red-500 block"></i>
-                <p>{cameraError}</p>
-              </div>
-            ) : (
-              <div className="relative w-full bg-black rounded-2xl overflow-hidden aspect-square border border-slate-800 flex items-center justify-center">
-                <video
-                  ref={videoRef}
-                  autoPlay
-                  playsInline
-                  className="w-full h-full object-cover"
-                />
-              </div>
-            )}
-
-            <div className="flex items-center gap-3 w-full pt-1">
-              <button
-                type="button"
-                onClick={() => setIsCameraActive(false)}
-                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl transition-colors cursor-pointer"
-              >
-                বাতিল
-              </button>
-              {!cameraError && (
-                <button
-                  type="button"
-                  onClick={captureCameraPhoto}
-                  className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 cursor-pointer"
-                >
-                  <i className="fa-solid fa-camera"></i>
-                  <span>ছবি ক্যাপচার করুন</span>
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Full-Screen Image Lightbox Viewer Modal */}
-      {isImageViewerOpen && (
-        <div
-          className="fixed inset-0 z-60 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-200"
-          onClick={() => setIsImageViewerOpen(false)}
-        >
-          <div
-            className="relative max-w-4xl max-h-[90vh] bg-slate-900 rounded-2xl p-2 border border-slate-700 shadow-2xl flex flex-col items-center overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header / Controls */}
-            <div className="w-full flex items-center justify-between px-4 py-3 bg-slate-800/90 text-white rounded-t-xl shrink-0">
-              <div className="flex items-center gap-2">
-                <i className="fa-solid fa-user-circle text-indigo-400 text-lg"></i>
-                <span className="font-bold text-sm text-slate-100">
-                  MD. Arafat Kazi (Pin: 3802) - ফটো ভিউ
-                </span>
-              </div>
-              <button
-                onClick={() => setIsImageViewerOpen(false)}
-                className="w-9 h-9 rounded-full bg-slate-700 hover:bg-red-600 text-white flex items-center justify-center transition-colors font-bold text-base"
-                title="বন্ধ করুন"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Image display */}
-            <div className="p-3 flex items-center justify-center overflow-auto max-h-[80vh]">
-              <img
-                src={profilePhoto}
-                alt="MD. Arafat Kazi Full View"
-                className="max-h-[76vh] max-w-full object-contain rounded-lg shadow-2xl border border-slate-800"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800&auto=format&fit=crop&q=80';
-                }}
-              />
-            </div>
-
-            {/* Lightbox Footer */}
-            <div className="w-full text-center py-2 bg-slate-950/80 text-xs text-slate-400 font-medium rounded-b-xl shrink-0">
-              ক্লিক করে যেকোনো স্থানে আলতো চাপলে ছবি ভিউ বন্ধ হবে
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 };

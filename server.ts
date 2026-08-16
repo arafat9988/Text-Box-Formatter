@@ -557,6 +557,195 @@ ${text}`;
     }
   });
 
+  // API Route: WCR - Word Correction & Revision (Comparing Word File against Reference Files/Images)
+  app.post("/api/wcr-correct", upload.fields([
+    { name: "wordFile", maxCount: 1 },
+    { name: "refFiles", maxCount: 10 }
+  ]), async (req: express.Request, res: express.Response) => {
+    try {
+      const filesObj = (req as any).files || {};
+      const wordFile = filesObj["wordFile"]?.[0];
+      const refFiles: any[] = filesObj["refFiles"] || [];
+
+      if (!wordFile) {
+        return res.status(400).json({ error: "ওয়ার্ড (.docx) ফাইলটি প্রদান করা হয়নি।" });
+      }
+
+      // 1. Extract text & HTML from original Word File
+      let wordRawText = "";
+      try {
+        const textRes = await mammoth.extractRawText({ buffer: wordFile.buffer });
+        wordRawText = textRes.value || "";
+      } catch (docErr: any) {
+        console.error("WCR Word extract error:", docErr);
+        return res.status(400).json({ error: "আপলোডকৃত ফাইলটি একটি বৈধ .docx (Word Document) ফাইল নয় বা ফাইলটি ক্ষতিগ্রস্ত। অনুগ্রহ করে একটি সঠিক .docx ফাইল আপলোড করুন।" });
+      }
+
+      if (!wordRawText.trim()) {
+        return res.status(400).json({ error: "আপলোডকৃত ওয়ার্ড ফাইলটি থেকে কোনো টেক্সট পাওয়া যায়নি।" });
+      }
+
+      // 2. Extract contents from Reference files
+      const referenceParts: any[] = [];
+      let refTextAccumulator = "";
+
+      for (const rFile of refFiles) {
+        const rName = rFile.originalname || "reference";
+        const rMime = rFile.mimetype || "";
+        const isImg = rMime.startsWith("image/") || rName.match(/\.(png|jpe?g|webp|bmp)$/i);
+        const isPdf = rMime.includes("pdf") || rName.endsWith(".pdf");
+        const isDocx = rMime.includes("wordprocessingml") || rName.endsWith(".docx");
+
+        if (isImg) {
+          const base64 = rFile.buffer.toString("base64");
+          let effectiveMime = rMime || "image/png";
+          if (effectiveMime === "image/jpg") effectiveMime = "image/jpeg";
+          referenceParts.push({
+            inlineData: {
+              mimeType: effectiveMime,
+              data: base64
+            }
+          });
+        } else if (isPdf) {
+          let pdfText = "";
+          try {
+            if (typeof parsePdf === "function") {
+              const pData = await parsePdf(rFile.buffer);
+              pdfText = pData?.text || "";
+            }
+          } catch (pErr) {
+            console.warn("WCR Ref PDF parse note:", pErr);
+          }
+          if (pdfText.trim()) {
+            refTextAccumulator += `\n\n[রেফারেন্স PDF ফাইল: "${rName}"]\n${pdfText.trim()}`;
+          }
+          const base64 = rFile.buffer.toString("base64");
+          if (base64.length < 6000000) {
+            referenceParts.push({
+              inlineData: {
+                mimeType: "application/pdf",
+                data: base64
+              }
+            });
+          }
+        } else if (isDocx) {
+          try {
+            const dText = (await mammoth.extractRawText({ buffer: rFile.buffer })).value || "";
+            if (dText.trim()) {
+              refTextAccumulator += `\n\n[রেফারেন্স Word ফাইল: "${rName}"]\n${dText.trim()}`;
+            }
+          } catch (dErr) {
+            console.warn("WCR Ref DOCX parse note:", dErr);
+          }
+        }
+      }
+
+      if (refTextAccumulator.trim()) {
+        referenceParts.unshift({
+          text: refTextAccumulator.trim().slice(0, 100000)
+        });
+      }
+
+      // 3. Build Gemini Request
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey) {
+        return res.status(500).json({ error: "GEMINI_API_KEY কনফিগার করা নেই।" });
+      }
+
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            "User-Agent": "aistudio-build",
+          },
+        },
+      });
+
+      const systemInstruction = `আপনি একটি অত্যন্ত নিখুঁত ও অভিজ্ঞ ডকুমেন্টস প্রুফরিডার ও কারেকশন সিস্টেম (Proofreader & Corrector AI Engine)। আপনার কাজ হলো ব্যবহারকারীর আপলোডকৃত আসল Word Document-এর টেক্সটকে তার প্রদানকৃত রেফারেন্স (Reference Image / PDF / Docx) উৎসের সাথে নিখুঁতভাবে মিলিয়ে সকল ভুলত্রুটি সংশোধন করা।
+      
+অলঙ্ঘনীয় কারেকশন নিয়মাবলী:
+১. মূল ওয়ার্ড টেক্সটের প্রতিটি বাক্য ও শব্দের সাথে রেফারেন্স উৎসের হুবহু মিল রেখে বানান ভুল, টাইপো, যুক্তবর্ণের বিভ্রাট, শব্দ বাদ যাওয়া বা ভুল শব্দ সংশোধন করুন।
+২. প্রশ্ন নম্বর (যেমন: 01., 02., ১., ২.), বিষয় কোড (যেমন: Ban, GK), অপশন লেবেল ((ক), (খ), (গ), (ঘ) বা (a), (b), (c), (d)), এবং রেফারেন্স ব্র্যাকেট ([JU(C)'24-25] ইত্যাদি) হুবহু সঠিক রাখুন।
+৩. উদ্ধৃতি চিহ্ন/কমা (Quotation Marks vs Underline - বিশেষ সতর্কবার্তা):
+   - রেফারেন্স ছবিতে বা ফাইলে কোনো কবিতার নাম, গল্পের নাম, বই বা শব্দের পাশে/উপরে যদি একক বা দ্বৈত উদ্ধৃতি চিহ্ন বা ফার্স্ট কমা/লাস্ট কমা থাকে (যেমন: 'তাহারে পড়ে মনে', 'বইপড়া', "রক্তাক্ত প্রান্তর", 'কবিতায়'), সেগুলোকে কখনোই আন্ডারলাইন (<u>...</u>) বানাবেন না! সেগুলোকে হুবহু উদ্ধৃতি চিহ্ন / কমা ('...' বা "...") হিসেবেই প্রদান করুন।
+   - আন্ডারলাইন (Underline): কেবলমাত্র যদি কোনো নির্দিষ্ট শব্দ বা বাক্যাংশের সম্পূর্ণ নিচে সুস্পষ্ট টানা রেখা (Underline) থাকে, তবেই সেই শব্দ/বাক্যাংশটিকে <u>...</u> এইচটিএমএল ট্যাগে মুড়িয়ে দিন (যেমন: "তিনি <u>গল্পকার</u> হিসেবে পরিচিত।")।
+৪. উত্তর নির্দেশক (Correct Answer Mark): রেফারেন্স উৎসে কোনো অপশনে টিক চিহ্ন (✓), তারকা (*), হাইলাইট বা বৃত্ত চিহ্ন থাকলে, কারেক্টকৃত টেক্সটে সংশ্লিষ্ট অপশনের পাশে একটি তারকা (*) বা টিক চিহ্ন (✓) বজায় রাখুন (যেমন: 'খ. গল্পকার *')।
+৫. সকল লাইন, প্যারাগ্রাফ ও কলাম টেবিলের গঠন এবং ক্রম হুবহু অপরিবর্তিত রাখুন।
+৬. উত্তর বর্ণ (যেমন: d, c, b, a, ঘ, গ, খ, ক) কখনোই ব্যাখ্যার বাক্যের শেষে বা ভেতরে যুক্ত করবেন না। ব্যাখ্যার বাক্য এবং উত্তর বর্ণ সম্পূর্ণ পৃথক লাইনে বা ঘরে থাকবে।
+৭. আউটপুটে কোনো অপ্রাসঙ্গিক ভূমিকা, উপসংহার বা মার্কডাউন কোড ব্লক (যেমন \`\`\`) রাখবেন না। শুধুমাত্র কারেক্টকৃত মূল প্লেইন টেক্সট প্রদান করুন।`;
+
+      const promptParts: any[] = [
+        ...referenceParts,
+        {
+          text: `[মূল কারেকশনযোগ্য WORD DOCUMENT-এর বর্তমান টেক্সট]:\n${wordRawText}\n\n[কাজ]: উপরের রেফারেন্স উৎস(সমূহ)-এর সাথে এই মূল Word Document-এর টেক্সট মিলিয়ে সকল ভুল বানান, যুক্তবর্ণ, আন্ডারলাইন (<u>...</u>) ও অপশনের ভুল সংশোধন করে সম্পুর্ণ নিখুঁত কারেক্টকৃত টেক্সট প্রদান করুন।`
+        }
+      ];
+
+      const candidateModels = [
+        "gemini-3.1-flash-lite",
+        "gemini-flash-latest",
+        "gemini-3.6-flash",
+      ];
+      let correctedText = "";
+      let lastErr: any = null;
+
+      const activeModels = getActiveCandidateModels(candidateModels);
+
+      for (const modelName of activeModels) {
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents: promptParts,
+              config: {
+                systemInstruction,
+                temperature: 0.2,
+              }
+            });
+            correctedText = response.text || "";
+            if (correctedText.trim()) break;
+          } catch (mErr: any) {
+            const errMsg = mErr?.message || String(mErr);
+            lastErr = mErr;
+            if (
+              errMsg.includes("404") ||
+              errMsg.includes("NOT_FOUND") ||
+              errMsg.includes("429") ||
+              errMsg.includes("RESOURCE_EXHAUSTED") ||
+              errMsg.includes("quota")
+            ) {
+              markModelCooldown(modelName, 60000);
+              console.log(`[WCR Model Fallback] ${modelName} limit/quota reached. Cooling down 60s, switching model.`);
+              break;
+            }
+            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
+          }
+        }
+        if (correctedText.trim()) break;
+      }
+
+      if (!correctedText.trim() && lastErr) {
+        throw lastErr;
+      }
+
+      const finalCorrectedText = correctedText.trim();
+
+      res.json({
+        success: true,
+        correctedText: finalCorrectedText,
+        originalTextLength: wordRawText.length,
+        correctedTextLength: finalCorrectedText.length
+      });
+    } catch (error: any) {
+      console.error("WCR Correction Error:", error);
+      let message = error.message || "WCR প্রসেস ব্যর্থ হয়েছে।";
+      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
+        message = "Gemini API ফ্রি কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে ১ মিনিট অপেক্ষা করে আবার চেষ্টা করুন।";
+      }
+      res.status(500).json({ error: message });
+    }
+  });
+
   // Gemini AI Chat Route
   app.post("/api/chat", express.json({ limit: "500mb" }), async (req: express.Request, res: express.Response) => {
     try {

@@ -66,6 +66,16 @@ export function cleanMergeReferenceLines(rawRef: string): string {
   return merged.replace(/\s+/g, ' ').trim();
 }
 
+export function fixQuotationUnderlines(text: string): string {
+  if (!text) return text;
+  let s = text;
+  // If <u> tag wraps a single/double quote or quoted phrase like <u>'তাহারে পড়ে মনে'</u>, unwrap it to 'তাহারে পড়ে মনে'
+  s = s.replace(/<u>\s*(['"‘'“])([\s\S]*?)(['"’”])\s*<\/u>/gi, "$1$2$3");
+  // If <u> wrapped standalone quote characters like <u>'</u> or <u>"</u>
+  s = s.replace(/<u>\s*(['"‘'“'”])\s*<\/u>/gi, "$1");
+  return s;
+}
+
 export function cleanExplanationText(text: string): string {
   if (!text) return "";
   let s = text.trim();
@@ -75,6 +85,10 @@ export function cleanExplanationText(text: string): string {
     prev = s;
     s = s.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]*\s*/gi, '').trim();
   }
+
+  // Strip trailing standalone answer markers (e.g., " d", " (d)", " [d]", " ঘ", " (ঘ)", " Ans: d", " Ans: (d)", " উত্তর: d")
+  s = s.replace(/(?:\s+|\b)(?:Ans|Answer|উত্তর|সঠিক উত্তর)?\s*[\(\（\[]?([ক-ঘa-d1-4১-৪])[\)\）\]]?\s*$/i, '').trim();
+
   return s;
 }
 
@@ -669,13 +683,25 @@ export function parseQuestions(text: string): QuestionBlock[] {
 
     for (let i = 0; i < 4; i++) {
       if (b.options[i]) {
-        b.options[i] = b.options[i].replace(/[✓✔\*√#]/g, '').trim();
+        b.options[i] = fixQuotationUnderlines(b.options[i].replace(/[✓✔\*√#]/g, '')).trim();
       }
     }
     
-    b.questionText = (b.questionText || "").replace(/[✓✔\*√#]/g, '').trim();
+    b.questionText = fixQuotationUnderlines((b.questionText || "").replace(/[✓✔\*√#]/g, '')).trim();
     if (b.explanation) {
-      b.explanation = cleanExplanationText(b.explanation);
+      let expVal = b.explanation.trim();
+      let trailingAnsMatch = expVal.match(/(?:\s+|\b)(?:Ans|Answer|উত্তর|সঠিক উত্তর)?\s*[\(\（\[]?([ক-ঘa-d1-4১-৪])[\)\）\]]?\s*$/i);
+      if (trailingAnsMatch) {
+        let char = trailingAnsMatch[1].toLowerCase();
+        let optIdx = ({'ক': 0, 'a': 0, 'খ': 1, 'b': 1, 'গ': 2, 'c': 2, 'ঘ': 3, 'd': 3, '1': 0, '2': 1, '3': 2, '4': 3, '১': 0, '২': 1, '৩': 2, '৪': 3} as Record<string, number>)[char];
+        if (optIdx !== undefined) {
+          if (b.correctAnswerIndex === -1) {
+            b.correctAnswerIndex = optIdx;
+            b.hasTickMark = true;
+          }
+        }
+      }
+      b.explanation = fixQuotationUnderlines(cleanExplanationText(b.explanation));
     }
   });
 
@@ -1221,6 +1247,17 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
         b.outsideRefAfter = b.outsideRefAfter ? b.outsideRefAfter + "\n" + expVal : expVal;
         b.explanation = "";
       } else {
+        let trailingAnsMatch = expVal.match(/(?:\s+|\b)(?:Ans|Answer|উত্তর|সঠিক উত্তর)?\s*[\(\（\[]?([ক-ঘa-d1-4১-৪])[\)\）\]]?\s*$/i);
+        if (trailingAnsMatch) {
+          let char = trailingAnsMatch[1].toLowerCase();
+          let optIdx = ({'ক': 0, 'a': 0, 'খ': 1, 'b': 1, 'গ': 2, 'c': 2, 'ঘ': 3, 'd': 3, '1': 0, '2': 1, '3': 2, '4': 3, '১': 0, '২': 1, '৩': 2, '৪': 3} as Record<string, number>)[char];
+          if (optIdx !== undefined) {
+            if (b.correctAnswerIndex === -1) {
+              b.correctAnswerIndex = optIdx;
+              b.hasTickMark = true;
+            }
+          }
+        }
         b.explanation = cleanExplanationText(expVal);
       }
     }

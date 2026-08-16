@@ -543,7 +543,7 @@ export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'Su
             return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${part}</span>`;
           } else if (/[\u0980-\u09FF]/.test(part)) {
             if (fontType === 'SutonnyMJ') {
-              return `<span style="font-family: 'SutonnyMJ', sans-serif;">${unicodeToBijoy(part)}</span>`;
+              return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(part)}</span>`;
             } else {
               return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${part}</span>`;
             }
@@ -553,7 +553,7 @@ export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'Su
         }).join('');
       } else {
         if (fontType === 'SutonnyMJ') {
-          return `<span style="font-family: 'SutonnyMJ', sans-serif;">${unicodeToBijoy(token)}</span>`;
+          return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(token)}</span>`;
         } else {
           return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${token}</span>`;
         }

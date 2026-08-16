@@ -24,6 +24,10 @@ import {
 } from './utils/parser';
 import { translateBengaliToEnglish, localRuleBasedTranslate } from './utils/translate';
 import { ChatTab } from './components/ChatTab';
+import { WcrTab } from './components/WcrTab';
+import { PdfToolsTab } from './components/PdfToolsTab';
+import { NewspaperTab } from './components/NewspaperTab';
+import { ImportantWebTab } from './components/ImportantWebTab';
 import { QuickLinksMenu } from './components/QuickLinksMenu';
 import { BookHistoryModal } from './components/BookHistoryModal';
 import { AuthorProfileModal } from './components/AuthorProfileModal';
@@ -54,7 +58,7 @@ export interface QcBook {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'converter' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat'>('converter');
+  const [activeTab, setActiveTab] = useState<'converter' | 'important-web' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat' | 'wcr' | 'pdf-tools' | 'newspaper'>('converter');
   const [subjectCode, setSubjectCode] = useState<'Ban' | 'Eng' | 'GK'>('Ban');
 
   const [converterPreviewText, setConverterPreviewText] = useState<string>('');
@@ -319,7 +323,11 @@ export default function App() {
       
     } catch (error: any) {
       console.error(error);
-      alert(error.message || 'Conversion failed');
+      let msg = error.message || 'Conversion failed';
+      if (msg.includes("central directory") || msg.includes("zip") || msg.includes("Corrupted") || msg.includes("JSZip") || msg.includes("end of central")) {
+        msg = "আপলোডকৃত ফাইলটি একটি বৈধ .docx (Word Document) ফাইল নয় বা ফাইলটি ক্ষতিগ্রস্ত (Corrupted)। অনুগ্রহ করে সঠিক .docx ফাইল আপলোড করুন।";
+      }
+      alert(msg);
     } finally {
       setIsConverting(false);
     }
@@ -378,7 +386,11 @@ export default function App() {
       
     } catch (error: any) {
       console.error(error);
-      alert(error.message || 'Conversion failed');
+      let msg = error.message || 'Conversion failed';
+      if (msg.includes("central directory") || msg.includes("zip") || msg.includes("Corrupted") || msg.includes("JSZip") || msg.includes("end of central")) {
+        msg = "আপলোডকৃত ফাইলটি একটি বৈধ .docx (Word Document) ফাইল নয় বা ফাইলটি ক্ষতিগ্রস্ত (Corrupted)। অনুগ্রহ করে সঠিক .docx ফাইল আপলোড করুন।";
+      }
+      alert(msg);
     } finally {
       setIsB2uConverting(false);
     }
@@ -394,6 +406,8 @@ export default function App() {
   const [statusMsg1, setStatusMsg1] = useState<string>('');
   const [actionMsg1, setActionMsg1] = useState<string>('');
   const [actionMsg2, setActionMsg2] = useState<string>('');
+  const [isDraggingCard1, setIsDraggingCard1] = useState<boolean>(false);
+  const [isDraggingCard2, setIsDraggingCard2] = useState<boolean>(false);
 
   // Tab 2: Formatter State
   const [inputText2, setInputText2] = useState<string>('');
@@ -401,6 +415,7 @@ export default function App() {
   const [statusMsg2, setStatusMsg2] = useState<string>('');
   const [actionMsgT1, setActionMsgT1] = useState<string>('');
   const [actionMsgT2, setActionMsgT2] = useState<string>('');
+  const [isDraggingTab2, setIsDraggingTab2] = useState<boolean>(false);
 
   // Tab 2.5: Text Right Formatter State
   const [subjectCodeRight, setSubjectCodeRight] = useState<'Ban' | 'Eng' | 'GK'>('Ban');
@@ -409,6 +424,7 @@ export default function App() {
   const [statusMsgRight, setStatusMsgRight] = useState<string>('');
   const [actionMsgTR1, setActionMsgTR1] = useState<string>('');
   const [actionMsgTR2, setActionMsgTR2] = useState<string>('');
+  const [isDraggingTab2Right, setIsDraggingTab2Right] = useState<boolean>(false);
 
   // Tab 3: Question Collect State
   const [qcBooks, setQcBooks] = useState<QcBook[]>([]);
@@ -797,29 +813,29 @@ export default function App() {
             return <span key={`${prefix}-${tIdx}`}>{token}</span>;
           }
           if (isEnglishWord(token, customDict)) {
-            return <span key={`${prefix}-${tIdx}`} className="eng-text">{token}</span>;
+            return <span key={`${prefix}-${tIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{token}</span>;
           } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
             const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
             return subParts.map((part, sIdx) => {
               if (!part) return null;
               if (isEnglishWord(part, customDict) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
-                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text">{part}</span>;
+                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{part}</span>;
               } else if (/[\u0980-\u09FF]/.test(part)) {
                 if (fontMode === 'SutonnyMJ') {
                   const bijoyPart = forceBijoyInput ? part : unicodeToBijoy(part);
-                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="bijoy-text">{bijoyPart}</span>;
+                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="bijoy-text" style={{ fontFamily: "'SutonnyMJ', sans-serif", msoAsciiFontFamily: 'SutonnyMJ', msoHansiFontFamily: 'SutonnyMJ', msoBidiFontFamily: 'SutonnyMJ', msoCsFontFamily: 'SutonnyMJ' } as any}>{bijoyPart}</span>;
                 } else {
                   const uniPart = forceBijoyInput ? bijoyToUnicode(part) : part;
                   return <span key={`${prefix}-${tIdx}-${sIdx}`} className="ben-text" style={{ fontFamily: "'SolaimanLipi', 'Solaiman Lipi', sans-serif", msoBidiFontFamily: "'SolaimanLipi'", msoAsciiFontFamily: "'SolaimanLipi'", msoHansiFontFamily: "'SolaimanLipi'" } as any}>{uniPart}</span>;
                 }
               } else {
-                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text">{part}</span>;
+                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{part}</span>;
               }
             });
           } else {
             if (fontMode === 'SutonnyMJ') {
               const bijoyToken = forceBijoyInput ? token : unicodeToBijoy(token);
-              return <span key={`${prefix}-${tIdx}`} className="bijoy-text">{bijoyToken}</span>;
+              return <span key={`${prefix}-${tIdx}`} className="bijoy-text" style={{ fontFamily: "'SutonnyMJ', sans-serif", msoAsciiFontFamily: 'SutonnyMJ', msoHansiFontFamily: 'SutonnyMJ', msoBidiFontFamily: 'SutonnyMJ', msoCsFontFamily: 'SutonnyMJ' } as any}>{bijoyToken}</span>;
             } else {
               const uniToken = forceBijoyInput ? bijoyToUnicode(token) : token;
               return <span key={`${prefix}-${tIdx}`} className="ben-text" style={{ fontFamily: "'SolaimanLipi', 'Solaiman Lipi', sans-serif", msoBidiFontFamily: "'SolaimanLipi'", msoAsciiFontFamily: "'SolaimanLipi'", msoHansiFontFamily: "'SolaimanLipi'" } as any}>{uniToken}</span>;
@@ -1164,18 +1180,27 @@ export default function App() {
               return "";
             });
 
+            const trimmed = textContent.trim();
             const hasBengali = /[\u0980-\u09FF]/.test(textContent);
-            const isPureEnglish = /^[a-zA-Z0-9\s\.,\-\(\)\[\]:;'"\/\#\%\&\*\+\=\@\_\$\!\?\<\>\|\\~`^]+$/.test(textContent);
+            const isExplicitEng = (rXml.includes('eng-text') || rXml.includes('Times New Roman')) && !rXml.includes('bijoy-text') && !rXml.includes('SutonnyMJ');
+            const hasBijoyChars = /[‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(textContent);
+            const isEnglishByDict = isEnglishWord(trimmed, customDict) && !hasBijoyChars;
 
             let fontTag = "";
             if (targetFont === 'SutonnyMJ') {
-              if (isPureEnglish && !hasBengali && !rXml.includes('SutonnyMJ')) {
+              if (isExplicitEng || (isEnglishByDict && !rXml.includes('SutonnyMJ') && !rXml.includes('bijoy-text'))) {
                 fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="Times New Roman"/>`;
               } else {
                 fontTag = `<w:rFonts w:ascii="SutonnyMJ" w:hAnsi="SutonnyMJ" w:cs="SutonnyMJ" w:eastAsia="SutonnyMJ"/>`;
               }
             } else {
-              fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
+              if (hasBengali || rXml.includes('SolaimanLipi') || rXml.includes('ben-text')) {
+                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
+              } else if (isEnglishWord(trimmed, customDict)) {
+                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="Times New Roman"/>`;
+              } else {
+                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
+              }
             }
 
             if (/<w:rPr(?:\s[^>]*)?>/i.test(rXml)) {
@@ -1929,11 +1954,11 @@ export default function App() {
         <button
           type="button"
           onClick={() => setIsProfileModalOpen(true)}
-          className="bg-slate-100 hover:bg-indigo-50 border-2 border-gray-300 hover:border-indigo-400 px-3 py-1.5 rounded-md font-sans font-bold text-xs md:text-sm text-gray-800 hover:text-indigo-800 shadow-inner flex items-center gap-2 cursor-pointer transition-all group"
+          className="bg-slate-100 hover:bg-indigo-50 border-2 border-gray-300 hover:border-indigo-400 px-3 py-1.5 rounded-md font-mono font-bold text-xs md:text-sm text-gray-800 hover:text-indigo-800 shadow-inner flex items-center gap-2 cursor-pointer transition-all group"
           title="ডেভেলপার পরিচিতি ও ফিচার গাইড দেখতে ক্লিক করুন"
         >
           <i className="fa-solid fa-circle-info text-indigo-600 group-hover:scale-110 transition-transform"></i>
-          <span>Website Creator & Developer Arafat Kazi Profile</span>
+          <span>arafat-3802-bangla-english-fixer</span>
         </button>
         <div className="flex items-center gap-2">
           <div className="bg-emerald-50 border-2 border-emerald-500 px-3 py-1.5 rounded-md font-bold text-xs md:text-sm text-emerald-700">
@@ -1946,7 +1971,6 @@ export default function App() {
               <i className="fa-brands fa-whatsapp text-lg text-emerald-600"></i> WhatsApp Group
             </a>
           </div>
-          <QuickLinksMenu />
         </div>
       </div>
       
@@ -2006,16 +2030,76 @@ export default function App() {
           version
         </button>
         <button
+          onClick={() => setActiveTab('wcr')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
+            activeTab === 'wcr'
+              ? 'bg-red-700 text-white border-red-700'
+              : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
+          }`}
+        >
+          WCR
+        </button>
+        <button
+          onClick={() => setActiveTab('important-web')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
+            activeTab === 'important-web'
+              ? 'bg-red-700 text-white border-red-700 shadow-md'
+              : 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100 font-extrabold'
+          }`}
+        >
+          Important Web
+        </button>
+        <button
+          onClick={() => setActiveTab('newspaper')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
+            activeTab === 'newspaper'
+              ? 'bg-red-700 text-white border-red-700 shadow-md'
+              : 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100 font-extrabold'
+          }`}
+        >
+          Newspaper All
+        </button>
+        <button
+          onClick={() => setActiveTab('pdf-tools')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
+            activeTab === 'pdf-tools'
+              ? 'bg-red-700 text-white border-red-700 shadow-md'
+              : 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100 font-extrabold'
+          }`}
+        >
+          PDF All Tools
+        </button>
+        <button
           onClick={() => setActiveTab('chat')}
           className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
             activeTab === 'chat'
-              ? 'bg-red-700 text-white border-red-700'
-              : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
+              ? 'bg-red-700 text-white border-red-700 shadow-md'
+              : 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100 font-extrabold'
           }`}
         >
           Chat
         </button>
       </div>
+
+      {/* ================= TAB: IMPORTANT WEB ================= */}
+      {activeTab === 'important-web' && (
+        <ImportantWebTab />
+      )}
+
+      {/* ================= TAB: NEWSPAPER ALL ================= */}
+      {activeTab === 'newspaper' && (
+        <NewspaperTab />
+      )}
+
+      {/* ================= TAB: PDF ALL TOOLS ================= */}
+      {activeTab === 'pdf-tools' && (
+        <PdfToolsTab />
+      )}
+
+      {/* ================= TAB: WCR ================= */}
+      {activeTab === 'wcr' && (
+        <WcrTab customDict={customDict} />
+      )}
 
       {/* ================= TAB: CHAT ================= */}
       {activeTab === 'chat' && (
@@ -2049,99 +2133,153 @@ export default function App() {
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Card 1: Unicode to Bijoy DOCX */}
-              <div className="p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-bold text-gray-800">SolaimanLipi ওয়ার্ড ফাইল কনভার্ট করুন <br /> (Unicode to Bijoy)</h2>
+              <div
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingCard1(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingCard1(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingCard1(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    handleFileUpload(e.dataTransfer.files[0]);
+                  }
+                }}
+                className={`p-5 bg-white border-2 rounded-lg shadow-sm transition-all duration-200 ${
+                  isDraggingCard1 ? 'border-red-500 bg-red-50/60 ring-2 ring-red-200' : 'border-gray-200 hover:border-red-300'
+                }`}
+              >
+                <div className="flex justify-between items-center mb-3">
+                  <h2 className="text-base font-bold text-gray-800">SolaimanLipi ওয়ার্ড ফাইল কনভার্ট করুন <br /> (Unicode to Bijoy)</h2>
                   <button
                     onClick={handleClearConverter}
-                    className="px-3 py-1 border border-red-600 text-red-600 text-xs font-bold rounded hover:bg-red-50 transition flex items-center gap-1"
+                    className="px-2.5 py-1 border border-red-600 text-red-600 text-xs font-bold rounded hover:bg-red-50 transition flex items-center gap-1 shrink-0"
                   >
                     <i className="fa-regular fa-trash-can"></i>
                     মুছে ফেলুন
                   </button>
                 </div>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".docx"
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleFileUpload(e.target.files[0]);
-                    }
-                  }}
-                  className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100"
-                />
+
+                <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-red-300 rounded-lg bg-red-50/20 cursor-pointer hover:bg-red-50/60 transition text-center group">
+                  <i className="fa-solid fa-cloud-arrow-up text-2xl text-red-600 mb-1 group-hover:scale-110 transition-transform"></i>
+                  <span className="text-xs font-bold text-gray-700 mb-0.5">
+                    {isDraggingCard1 ? 'ফাইলটি এখানে ছেড়ে দিন...' : 'ওয়ার্ড ফাইল ড্রাগ ও ড্রপ করুন অথবা সিলেক্ট করুন'}
+                  </span>
+                  <span className="text-[11px] text-gray-500 font-medium">(.docx ফাইল সাপোর্টেড)</span>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".docx"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleFileUpload(e.target.files[0]);
+                      }
+                    }}
+                    className="hidden"
+                  />
+                </label>
+
+                {converterFileName && (
+                  <div className="mt-2 text-xs text-slate-600 font-medium truncate text-center">
+                    📁 সিলেক্টেড ফাইল: <span className="font-bold text-slate-800">{converterFileName}</span>
+                  </div>
+                )}
 
                 {isConverting && (
-                  <div className="mt-4 p-2 text-center text-xs text-gray-600 bg-gray-50 rounded border border-gray-200">
+                  <div className="mt-3 p-2 text-center text-xs text-red-700 font-bold bg-red-50 rounded border border-red-200 animate-pulse flex items-center justify-center gap-2">
+                    <i className="fa-solid fa-spinner fa-spin"></i>
                     কনভার্ট হচ্ছে...
                   </div>
                 )}
 
                 {!isConverting && converterPreviewText && (
-                  <div className="mt-4">
-                    <div className="flex items-center gap-2 mt-2">
-                      {converterFileUrl && (
-                        <a
-                          href={converterFileUrl}
-                          download={converterFileName}
-                          className="bg-red-700 hover:bg-red-800 text-white text-xs font-bold py-1.5 px-4 rounded transition flex items-center gap-1 shadow"
-                        >
-                          <i className="fa-solid fa-download"></i>
-                          ডাউনলোড
-                        </a>
-                      )}
-                      {copySuccess && <span className="text-green-700 font-bold text-[10px]">✓ কপি হয়েছে!</span>}
-                    </div>
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    {converterFileUrl && (
+                      <a
+                        href={converterFileUrl}
+                        download={converterFileName}
+                        className="bg-red-700 hover:bg-red-800 text-white text-xs font-bold py-1.5 px-4 rounded transition flex items-center gap-1 shadow"
+                      >
+                        <i className="fa-solid fa-download"></i>
+                        ডাউনলোড
+                      </a>
+                    )}
+                    {copySuccess && <span className="text-green-700 font-bold text-[10px]">✓ কপি হয়েছে!</span>}
                   </div>
                 )}
               </div>
 
               {/* Card 2: Bijoy to Unicode DOCX */}
-              <div className="p-6 bg-white border border-gray-200 rounded-lg shadow-sm">
-                <div className="flex justify-between items-center mb-4">
-                  <h2 className="text-lg font-bold text-gray-800">SutonnyMJ ওয়ার্ড ফাইল কনভার্ট করুন <br /> (Bijoy to Unicode)</h2>
+              <div
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingCard2(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingCard2(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingCard2(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                    handleB2uFileUpload(e.dataTransfer.files[0]);
+                  }
+                }}
+                className={`p-5 bg-white border-2 rounded-lg shadow-sm transition-all duration-200 ${
+                  isDraggingCard2 ? 'border-sky-500 bg-sky-50/60 ring-2 ring-sky-200' : 'border-gray-200 hover:border-sky-300'
+                }`}
+              >
+                <div className="flex justify-between items-center mb-3">
+                  <h2 className="text-base font-bold text-gray-800">SutonnyMJ ওয়ার্ড ফাইল কনভার্ট করুন <br /> (Bijoy to Unicode)</h2>
                   <button
                     onClick={handleB2uClearConverter}
-                    className="px-3 py-1 border border-red-600 text-red-600 text-xs font-bold rounded hover:bg-red-50 transition flex items-center gap-1"
+                    className="px-2.5 py-1 border border-red-600 text-red-600 text-xs font-bold rounded hover:bg-red-50 transition flex items-center gap-1 shrink-0"
                   >
                     <i className="fa-regular fa-trash-can"></i>
                     মুছে ফেলুন
                   </button>
                 </div>
-                <input
-                  ref={b2uFileInputRef}
-                  type="file"
-                  accept=".docx"
-                  onChange={(e) => {
-                    if (e.target.files && e.target.files[0]) {
-                      handleB2uFileUpload(e.target.files[0]);
-                    }
-                  }}
-                  className="block w-full text-xs text-gray-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-red-50 file:text-red-700 hover:file:bg-red-100"
-                />
+
+                <label className="flex flex-col items-center justify-center p-4 border-2 border-dashed border-sky-300 rounded-lg bg-sky-50/20 cursor-pointer hover:bg-sky-50/60 transition text-center group">
+                  <i className="fa-solid fa-cloud-arrow-up text-2xl text-sky-600 mb-1 group-hover:scale-110 transition-transform"></i>
+                  <span className="text-xs font-bold text-gray-700 mb-0.5">
+                    {isDraggingCard2 ? 'ফাইলটি এখানে ছেড়ে দিন...' : 'ওয়ার্ড ফাইল ড্রাগ ও ড্রপ করুন অথবা সিলেক্ট করুন'}
+                  </span>
+                  <span className="text-[11px] text-gray-500 font-medium">(.docx ফাইল সাপোর্টেড)</span>
+                  <input
+                    ref={b2uFileInputRef}
+                    type="file"
+                    accept=".docx"
+                    onChange={(e) => {
+                      if (e.target.files && e.target.files[0]) {
+                        handleB2uFileUpload(e.target.files[0]);
+                      }
+                    }}
+                    className="hidden"
+                  />
+                </label>
+
+                {b2uFileName && (
+                  <div className="mt-2 text-xs text-slate-600 font-medium truncate text-center">
+                    📁 সিলেক্টেড ফাইল: <span className="font-bold text-slate-800">{b2uFileName}</span>
+                  </div>
+                )}
 
                 {isB2uConverting && (
-                  <div className="mt-4 p-2 text-center text-xs text-gray-600 bg-gray-50 rounded border border-gray-200">
+                  <div className="mt-3 p-2 text-center text-xs text-sky-700 font-bold bg-sky-50 rounded border border-sky-200 animate-pulse flex items-center justify-center gap-2">
+                    <i className="fa-solid fa-spinner fa-spin"></i>
                     কনভার্ট হচ্ছে...
                   </div>
                 )}
 
                 {!isB2uConverting && b2uPreviewText && (
-                  <div className="mt-4">
-                    <div className="flex items-center gap-2 mt-2">
-                      {b2uFileUrl && (
-                        <a
-                          href={b2uFileUrl}
-                          download={b2uFileName}
-                          className="bg-red-700 hover:bg-red-800 text-white text-xs font-bold py-1.5 px-4 rounded transition flex items-center gap-1 shadow"
-                        >
-                          <i className="fa-solid fa-download"></i>
-                          ডাউনলোড
-                        </a>
-                      )}
-                      {b2uCopySuccess && <span className="text-green-700 font-bold text-[10px]">✓ কপি হয়েছে!</span>}
-                    </div>
+                  <div className="mt-3 flex items-center justify-center gap-2">
+                    {b2uFileUrl && (
+                      <a
+                        href={b2uFileUrl}
+                        download={b2uFileName}
+                        className="bg-red-700 hover:bg-red-800 text-white text-xs font-bold py-1.5 px-4 rounded transition flex items-center gap-1 shadow"
+                      >
+                        <i className="fa-solid fa-download"></i>
+                        ডাউনলোড
+                      </a>
+                    )}
+                    {b2uCopySuccess && <span className="text-green-700 font-bold text-[10px]">✓ কপি হয়েছে!</span>}
                   </div>
                 )}
               </div>
@@ -2364,10 +2502,25 @@ export default function App() {
             <div className="text-red-700 text-base font-bold mb-3">ফাইলের (ছবি, PDF, Word) মাধ্যমে টাইপ</div>
             <div className="bg-sky-50 border border-sky-200 rounded-lg p-5">
               <div className="text-xs font-bold text-gray-700 text-left mb-2">
-                📁 ছবি (সর্বোচ্চ ৫টি), PDF অথবা Word Document (.docx) সিলেক্ট করুন বা পেস্ট করুন:
+                📁 ছবি (সর্বোচ্চ ৫টি), PDF অথবা Word Document (.docx) সিলেক্ট করুন বা ড্রাগ করে ছেড়ে দিন:
               </div>
-              <label className="block border-2 border-dashed border-sky-500 rounded-md p-5 bg-white cursor-pointer hover:bg-slate-50 transition text-blue-700 font-bold text-sm">
-                এখানে ক্লিক করে ফাইল সিলেক্ট করুন অথবা Ctrl+V চাপুন
+              <label 
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingTab2(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingTab2(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingTab2(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    processFiles(e.dataTransfer.files, 'inputText2');
+                  }
+                }}
+                className={`block border-2 border-dashed rounded-md p-5 transition cursor-pointer font-bold text-sm text-center ${
+                  isDraggingTab2 ? 'border-emerald-500 bg-emerald-50 text-emerald-800 scale-[1.01]' : 'border-sky-500 bg-white hover:bg-slate-50 text-blue-700'
+                }`}
+              >
+                <i className="fa-solid fa-cloud-arrow-up text-xl mr-2"></i>
+                {isDraggingTab2 ? 'ফাইলগুলো এখানে ছেড়ে দিন...' : 'এখানে ফাইল ড্রাগ ও ড্রপ করুন, ক্লিক করে সিলেক্ট করুন অথবা Ctrl+V চাপুন'}
                 <input
                   type="file"
                   accept="image/*, .pdf, .docx"
@@ -2533,10 +2686,25 @@ export default function App() {
             <div className="text-red-700 text-base font-bold mb-3">ফাইলের (ছবি, PDF, Word) মাধ্যমে টাইপ</div>
             <div className="bg-sky-50 border border-sky-200 rounded-lg p-5">
               <div className="text-xs font-bold text-gray-700 text-left mb-2">
-                📁 ছবি (সর্বোচ্চ ৫টি), PDF অথবা Word Document (.docx) সিলেক্ট করুন বা পেস্ট করুন:
+                📁 ছবি (সর্বোচ্চ ৫টি), PDF অথবা Word Document (.docx) সিলেক্ট করুন বা ড্রাগ করে ছেড়ে দিন:
               </div>
-              <label className="block border-2 border-dashed border-sky-500 rounded-md p-5 bg-white cursor-pointer hover:bg-slate-50 transition text-blue-700 font-bold text-sm">
-                এখানে ক্লিক করে ফাইল সিলেক্ট করুন অথবা Ctrl+V চাপুন
+              <label 
+                onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingTab2Right(true); }}
+                onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setIsDraggingTab2Right(false); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setIsDraggingTab2Right(false);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    processFiles(e.dataTransfer.files, 'inputTextRight');
+                  }
+                }}
+                className={`block border-2 border-dashed rounded-md p-5 transition cursor-pointer font-bold text-sm text-center ${
+                  isDraggingTab2Right ? 'border-emerald-500 bg-emerald-50 text-emerald-800 scale-[1.01]' : 'border-sky-500 bg-white hover:bg-slate-50 text-blue-700'
+                }`}
+              >
+                <i className="fa-solid fa-cloud-arrow-up text-xl mr-2"></i>
+                {isDraggingTab2Right ? 'ফাইলগুলো এখানে ছেড়ে দিন...' : 'এখানে ফাইল ড্রাগ ও ড্রপ করুন, ক্লিক করে সিলেক্ট করুন অথবা Ctrl+V চাপুন'}
                 <input
                   type="file"
                   accept="image/*, .pdf, .docx"
