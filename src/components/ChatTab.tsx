@@ -84,6 +84,13 @@ interface ChatMessage {
   fileName?: string;
   fileType?: string;
   fileSize?: string;
+  files?: Array<{
+    name: string;
+    type: string;
+    size?: string;
+    dataUrl?: string;
+    isImage?: boolean;
+  }>;
   timestamp: string;
 }
 
@@ -172,7 +179,7 @@ export const ChatTab: React.FC = () => {
   });
 
   const [input, setInput] = useState<string>('');
-  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<SelectedFile[]>([]);
   const [isReadingFile, setIsReadingFile] = useState<boolean>(false);
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -290,7 +297,7 @@ export const ChatTab: React.FC = () => {
     setActiveSessionId(newId);
     setMessages([defaultMsg]);
     setInput('');
-    setSelectedFile(null);
+    setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setShowHistory(false);
     setShowClearConfirm(false);
@@ -300,7 +307,7 @@ export const ChatTab: React.FC = () => {
     setActiveSessionId(session.id);
     setMessages(session.messages && session.messages.length > 0 ? session.messages : [createDefaultWelcomeMsg()]);
     setInput('');
-    setSelectedFile(null);
+    setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setShowHistory(false);
   };
@@ -321,7 +328,7 @@ export const ChatTab: React.FC = () => {
         setActiveSessionId(updated[0].id);
         setMessages(updated[0].messages && updated[0].messages.length > 0 ? updated[0].messages : [createDefaultWelcomeMsg()]);
         setInput('');
-        setSelectedFile(null);
+        setSelectedFiles([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
       } else {
         const newId = 'session-' + Date.now();
@@ -329,7 +336,7 @@ export const ChatTab: React.FC = () => {
         setActiveSessionId(newId);
         setMessages([defaultMsg]);
         setInput('');
-        setSelectedFile(null);
+        setSelectedFiles([]);
         if (fileInputRef.current) fileInputRef.current.value = '';
       }
     }
@@ -354,7 +361,7 @@ export const ChatTab: React.FC = () => {
     setActiveSessionId(newId);
     setMessages([defaultMsg]);
     setInput('');
-    setSelectedFile(null);
+    setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setShowClearConfirm(false);
     showToast('সকল চ্যাট হিস্ট্রি মুছে ফেলা হয়েছে');
@@ -419,93 +426,97 @@ export const ChatTab: React.FC = () => {
     });
   };
 
-  const processFile = async (file: File) => {
-    if (!file) return;
-
-    let mime = file.type || 'application/octet-stream';
-    if (file.name.toLowerCase().endsWith('.pdf')) {
-      mime = 'application/pdf';
-    }
-
-    const isImg = mime.startsWith('image/');
-    const isDoc = mime.includes('pdf') || 
-                  mime.includes('word') || 
-                  mime.startsWith('text/') || 
-                  file.name.toLowerCase().match(/\.(pdf|docx|txt|csv|json|xml|html|md|log)$/i);
-
+  const processFiles = async (fileList: FileList | File[]) => {
+    if (!fileList || fileList.length === 0) return;
     setIsReadingFile(true);
 
     try {
-      if (isImg) {
-        const compressedDataUrl = await compressImage(file);
-        setSelectedFile({
-          name: file.name,
-          type: 'image/jpeg',
-          size: file.size,
-          sizeFormatted: formatBytes(file.size),
-          dataUrl: compressedDataUrl || '',
-          isImage: true
-        });
-      } else if (isDoc) {
-        // Stream parse documents using multipart /api/parse-file
-        const formData = new FormData();
-        formData.append('file', file);
+      const newFiles: SelectedFile[] = [];
 
-        let parsedText = '';
-        try {
-          const parseRes = await fetch('/api/parse-file', {
-            method: 'POST',
-            body: formData
-          });
-          if (parseRes.ok) {
-            const pData = await parseRes.json();
-            parsedText = pData.extractedText || '';
-          }
-        } catch (e) {
-          console.warn('Document stream parse note:', e);
+      for (let i = 0; i < fileList.length; i++) {
+        const file = fileList[i];
+        if (!file) continue;
+
+        let mime = file.type || 'application/octet-stream';
+        if (file.name.toLowerCase().endsWith('.pdf')) {
+          mime = 'application/pdf';
         }
 
-        setSelectedFile({
-          name: file.name,
-          type: mime,
-          size: file.size,
-          sizeFormatted: formatBytes(file.size),
-          extractedText: parsedText,
-          isImage: false
-        });
-      } else {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          setSelectedFile({
+        const isImg = mime.startsWith('image/');
+        const isDoc = mime.includes('pdf') || 
+                      mime.includes('word') || 
+                      mime.startsWith('text/') || 
+                      file.name.toLowerCase().match(/\.(pdf|docx|txt|csv|json|xml|html|md|log)$/i);
+
+        if (isImg) {
+          const compressedDataUrl = await compressImage(file);
+          newFiles.push({
+            name: file.name,
+            type: 'image/jpeg',
+            size: file.size,
+            sizeFormatted: formatBytes(file.size),
+            dataUrl: compressedDataUrl || '',
+            isImage: true
+          });
+        } else if (isDoc) {
+          const formData = new FormData();
+          formData.append('file', file);
+
+          let parsedText = '';
+          try {
+            const parseRes = await fetch('/api/parse-file', {
+              method: 'POST',
+              body: formData
+            });
+            if (parseRes.ok) {
+              const pData = await parseRes.json();
+              parsedText = pData.extractedText || '';
+            }
+          } catch (e) {
+            console.warn('Document stream parse note:', e);
+          }
+
+          newFiles.push({
             name: file.name,
             type: mime,
             size: file.size,
             sizeFormatted: formatBytes(file.size),
-            dataUrl: event.target?.result as string,
+            extractedText: parsedText,
             isImage: false
           });
-          setIsReadingFile(false);
-        };
-        reader.onerror = (err) => {
-          console.error('File read error:', err);
-          alert('ফাইলটি পড়তে সমস্যা হয়েছে। অনুগ্রহ করে আবার চেষ্টা করুন।');
-          setIsReadingFile(false);
-        };
-        reader.readAsDataURL(file);
-        return;
+        } else {
+          await new Promise<void>((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+              newFiles.push({
+                name: file.name,
+                type: mime,
+                size: file.size,
+                sizeFormatted: formatBytes(file.size),
+                dataUrl: event.target?.result as string,
+                isImage: false
+              });
+              resolve();
+            };
+            reader.onerror = () => resolve();
+            reader.readAsDataURL(file);
+          });
+        }
       }
+
+      setSelectedFiles((prev) => [...prev, ...newFiles]);
     } catch (err) {
-      console.error('File process error:', err);
-      alert('ফাইলটি প্রস্তুত করতে ত্রুটি হয়েছে।');
+      console.error('Files process error:', err);
+      alert('ফাইল প্রস্তুত করতে ত্রুটি হয়েছে।');
     } finally {
       setIsReadingFile(false);
     }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    await processFile(file);
+    if (e.target.files && e.target.files.length > 0) {
+      await processFiles(e.target.files);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -526,14 +537,13 @@ export const ChatTab: React.FC = () => {
     setIsDragging(false);
 
     if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      const file = e.dataTransfer.files[0];
-      await processFile(file);
+      await processFiles(e.dataTransfer.files);
     }
   };
 
-  const handleRemoveFile = () => {
-    setSelectedFile(null);
-    if (fileInputRef.current) {
+  const handleRemoveFile = (index: number) => {
+    setSelectedFiles((prev) => prev.filter((_, idx) => idx !== index));
+    if (fileInputRef.current && selectedFiles.length <= 1) {
       fileInputRef.current.value = '';
     }
   };
@@ -549,16 +559,11 @@ export const ChatTab: React.FC = () => {
   const handleSend = async (textToSend?: string) => {
     const queryText = textToSend !== undefined ? textToSend : input;
     const activeBooks = reservedBooks.filter((b) => b.isActive);
-    if ((!queryText || !queryText.trim()) && !selectedFile && activeBooks.length === 0) return;
+    if ((!queryText || !queryText.trim()) && selectedFiles.length === 0 && activeBooks.length === 0) return;
 
-    const currentFile = selectedFile;
-    const isFileAttached = !!currentFile;
-    const isPdf = currentFile?.type?.includes('pdf') || currentFile?.name?.toLowerCase().endsWith('.pdf');
-
-    const defaultPromptText = isPdf
-      ? `সংযুক্ত PDF ফাইলটি বিশ্লেষণ করুন: "${currentFile?.name}"`
-      : currentFile
-      ? `সংযুক্ত ফাইলটি বিশ্লেষণ করুন: "${currentFile?.name}"`
+    const currentFiles = selectedFiles;
+    const defaultPromptText = currentFiles.length > 0
+      ? `সংযুক্ত ${currentFiles.length} টি ফাইল (${currentFiles.map(f => f.name).join(', ')}) বিশ্লেষণ করুন এবং এর তথ্য বা প্রশ্নগুলোর সমাধান দিন।`
       : activeBooks.length > 0
       ? `সংরক্ষিত ${activeBooks.length} টি বই থেকে রেফারেন্স অনুযায়ী প্রশ্ন কালেক্ট করুন।`
       : '';
@@ -569,16 +574,19 @@ export const ChatTab: React.FC = () => {
       id: Date.now().toString(),
       role: 'user',
       text: actualDisplayText,
-      image: currentFile?.dataUrl || undefined,
-      fileName: currentFile?.name,
-      fileType: currentFile?.type,
-      fileSize: currentFile?.sizeFormatted,
+      files: currentFiles.map(f => ({
+        name: f.name,
+        type: f.type,
+        size: f.sizeFormatted,
+        dataUrl: f.dataUrl,
+        isImage: f.isImage
+      })),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
-    setSelectedFile(null);
+    setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     setIsLoading(true);
 
@@ -617,10 +625,14 @@ export const ChatTab: React.FC = () => {
         body: JSON.stringify({
           messages: history,
           prompt: queryText.trim() || defaultPromptText,
-          fileBase64: currentFile?.isImage ? currentFile?.dataUrl : undefined,
-          fileText: currentFile?.extractedText,
-          fileName: currentFile?.name,
-          mimeType: currentFile?.type,
+          files: currentFiles.map(f => ({
+            name: f.name,
+            type: f.type,
+            sizeFormatted: f.sizeFormatted,
+            dataUrl: f.dataUrl,
+            extractedText: f.extractedText,
+            isImage: f.isImage
+          })),
           reservedBooks: booksPayload
         })
       });
@@ -676,7 +688,7 @@ export const ChatTab: React.FC = () => {
     ];
     setMessages(resetMsgs);
     setInput('');
-    setSelectedFile(null);
+    setSelectedFiles([]);
     if (fileInputRef.current) fileInputRef.current.value = '';
     try {
       localStorage.removeItem('gemini_chat_messages');
@@ -1052,44 +1064,89 @@ export const ChatTab: React.FC = () => {
                   : 'bg-white text-gray-800 border border-gray-200 rounded-tl-none'
               }`}
             >
-              {(msg.fileName || msg.image) && (
-                <div className="mb-3">
-                  {msg.fileType?.startsWith('image/') || (msg.image && msg.image.startsWith('data:image/')) ? (
-                    <div className="rounded-lg overflow-hidden border border-white/20 max-w-xs shadow-xs">
-                      <img src={msg.image} alt={msg.fileName || "User attachment"} className="w-full h-auto object-cover max-h-56" />
-                      {msg.fileName && (
-                        <div className="bg-black/50 text-white text-[11px] px-2.5 py-1 flex items-center justify-between">
-                          <span className="truncate max-w-[180px]">{msg.fileName}</span>
-                          {msg.fileSize && <span>{msg.fileSize}</span>}
+              {((msg.files && msg.files.length > 0) || msg.fileName || msg.image) && (
+                <div className="mb-3 space-y-2">
+                  {msg.files && msg.files.length > 0 ? (
+                    msg.files.map((file, fIdx) => (
+                      <div key={fIdx}>
+                        {file.isImage || file.type?.startsWith('image/') || (file.dataUrl && file.dataUrl.startsWith('data:image/')) ? (
+                          <div className="rounded-lg overflow-hidden border border-white/20 max-w-xs shadow-xs">
+                            <img src={file.dataUrl} alt={file.name || "User attachment"} className="w-full h-auto object-cover max-h-56" />
+                            <div className="bg-black/50 text-white text-[11px] px-2.5 py-1 flex items-center justify-between">
+                              <span className="truncate max-w-[180px]">{file.name}</span>
+                              {file.size && <span>{file.size}</span>}
+                            </div>
+                          </div>
+                        ) : file.type?.includes('pdf') || file.name?.toLowerCase().endsWith('.pdf') ? (
+                          <div className="flex items-center gap-3 bg-red-950/40 text-white p-2.5 rounded-xl border border-red-300/30 shadow-xs max-w-sm">
+                            <div className="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
+                              <i className="fa-solid fa-file-pdf"></i>
+                            </div>
+                            <div className="overflow-hidden flex-1 min-w-0">
+                              <p className="font-bold text-xs truncate text-white">{file.name || 'PDF ডকুমেন্ট'}</p>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-red-200">
+                                <span className="bg-red-500/50 px-1.5 py-0.2 rounded font-semibold uppercase">PDF</span>
+                                {file.size && <span>{file.size}</span>}
+                                <span>• সফলভাবে সংযুক্ত</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-3 bg-indigo-950/40 text-white p-2.5 rounded-xl border border-indigo-300/30 shadow-xs max-w-sm">
+                            <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
+                              <i className="fa-solid fa-file-lines"></i>
+                            </div>
+                            <div className="overflow-hidden flex-1 min-w-0">
+                              <p className="font-bold text-xs truncate text-white">{file.name || 'সংযুক্ত ফাইল'}</p>
+                              <div className="flex items-center gap-2 mt-0.5 text-[10px] text-indigo-200">
+                                <span className="bg-indigo-500/50 px-1.5 py-0.2 rounded font-semibold">FILE</span>
+                                {file.size && <span>{file.size}</span>}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div>
+                      {msg.fileType?.startsWith('image/') || (msg.image && msg.image.startsWith('data:image/')) ? (
+                        <div className="rounded-lg overflow-hidden border border-white/20 max-w-xs shadow-xs">
+                          <img src={msg.image} alt={msg.fileName || "User attachment"} className="w-full h-auto object-cover max-h-56" />
+                          {msg.fileName && (
+                            <div className="bg-black/50 text-white text-[11px] px-2.5 py-1 flex items-center justify-between">
+                              <span className="truncate max-w-[180px]">{msg.fileName}</span>
+                              {msg.fileSize && <span>{msg.fileSize}</span>}
+                            </div>
+                          )}
+                        </div>
+                      ) : msg.fileType?.includes('pdf') || msg.fileName?.toLowerCase().endsWith('.pdf') ? (
+                        <div className="flex items-center gap-3 bg-red-950/40 text-white p-2.5 rounded-xl border border-red-300/30 shadow-xs max-w-sm">
+                          <div className="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
+                            <i className="fa-solid fa-file-pdf"></i>
+                          </div>
+                          <div className="overflow-hidden flex-1 min-w-0">
+                            <p className="font-bold text-xs truncate text-white">{msg.fileName || 'PDF ডকুমেন্ট'}</p>
+                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-red-200">
+                              <span className="bg-red-500/50 px-1.5 py-0.2 rounded font-semibold uppercase">PDF</span>
+                              {msg.fileSize && <span>{msg.fileSize}</span>}
+                              <span>• সফলভাবে সংযুক্ত</span>
+                            </div>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-3 bg-indigo-950/40 text-white p-2.5 rounded-xl border border-indigo-300/30 shadow-xs max-w-sm">
+                          <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
+                            <i className="fa-solid fa-file-lines"></i>
+                          </div>
+                          <div className="overflow-hidden flex-1 min-w-0">
+                            <p className="font-bold text-xs truncate text-white">{msg.fileName || 'সংযুক্ত ফাইল'}</p>
+                            <div className="flex items-center gap-2 mt-0.5 text-[10px] text-indigo-200">
+                              <span className="bg-indigo-500/50 px-1.5 py-0.2 rounded font-semibold">FILE</span>
+                              {msg.fileSize && <span>{msg.fileSize}</span>}
+                            </div>
+                          </div>
                         </div>
                       )}
-                    </div>
-                  ) : msg.fileType?.includes('pdf') || msg.fileName?.toLowerCase().endsWith('.pdf') ? (
-                    <div className="flex items-center gap-3 bg-red-950/40 text-white p-2.5 rounded-xl border border-red-300/30 shadow-xs max-w-sm">
-                      <div className="w-10 h-10 rounded-lg bg-red-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
-                        <i className="fa-solid fa-file-pdf"></i>
-                      </div>
-                      <div className="overflow-hidden flex-1 min-w-0">
-                        <p className="font-bold text-xs truncate text-white">{msg.fileName || 'PDF ডকুমেন্ট'}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-red-200">
-                          <span className="bg-red-500/50 px-1.5 py-0.2 rounded font-semibold uppercase">PDF</span>
-                          {msg.fileSize && <span>{msg.fileSize}</span>}
-                          <span>• সফলভাবে সংযুক্ত</span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3 bg-indigo-950/40 text-white p-2.5 rounded-xl border border-indigo-300/30 shadow-xs max-w-sm">
-                      <div className="w-10 h-10 rounded-lg bg-indigo-600 flex items-center justify-center text-white shrink-0 shadow-xs text-lg">
-                        <i className="fa-solid fa-file-lines"></i>
-                      </div>
-                      <div className="overflow-hidden flex-1 min-w-0">
-                        <p className="font-bold text-xs truncate text-white">{msg.fileName || 'সংযুক্ত ফাইল'}</p>
-                        <div className="flex items-center gap-2 mt-0.5 text-[10px] text-indigo-200">
-                          <span className="bg-indigo-500/50 px-1.5 py-0.2 rounded font-semibold">FILE</span>
-                          {msg.fileSize && <span>{msg.fileSize}</span>}
-                        </div>
-                      </div>
                     </div>
                   )}
                 </div>
@@ -1221,7 +1278,7 @@ export const ChatTab: React.FC = () => {
       {/* Input area */}
       <div className="bg-white border-t border-gray-200 p-3 md:p-4">
         {/* Active Book Reserve Notification Bar */}
-        {reservedBooks.some((b) => b.isActive) && !selectedFile && (
+        {reservedBooks.some((b) => b.isActive) && selectedFiles.length === 0 && (
           <div className="mb-2.5 flex items-center justify-between bg-rose-50/90 border border-rose-200 rounded-xl px-3 py-2 text-xs text-rose-950 shadow-2xs">
             <div className="flex items-center gap-2 overflow-hidden min-w-0">
               <div className="w-6 h-6 rounded-lg bg-rose-600 text-white flex items-center justify-center text-xs shrink-0 shadow-2xs font-bold">
@@ -1263,90 +1320,107 @@ export const ChatTab: React.FC = () => {
           </div>
         )}
 
-        {selectedFile && !isReadingFile && (
-          <div
-            className={`mb-2.5 relative flex items-center justify-between gap-3 p-3 rounded-xl border shadow-xs transition ${
-              selectedFile.type?.includes('pdf') || selectedFile.name.toLowerCase().endsWith('.pdf')
-                ? 'bg-red-50/90 border-red-200 text-red-950'
-                : selectedFile.isImage
-                ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
-                : 'bg-indigo-50/90 border-indigo-200 text-indigo-950'
-            }`}
-          >
-            <div className="flex items-center gap-3 min-w-0 overflow-hidden">
-              {selectedFile.isImage ? (
-                <img
-                  src={selectedFile.dataUrl}
-                  alt={selectedFile.name}
-                  className="w-11 h-11 object-cover rounded-lg border border-emerald-300 shrink-0 shadow-xs"
-                />
-              ) : selectedFile.type?.includes('pdf') || selectedFile.name.toLowerCase().endsWith('.pdf') ? (
-                <div className="w-11 h-11 bg-red-600 text-white rounded-lg flex items-center justify-center shrink-0 font-bold text-xl shadow-xs">
-                  <i className="fa-solid fa-file-pdf"></i>
-                </div>
-              ) : (
-                <div className="w-11 h-11 bg-indigo-600 text-white rounded-lg flex items-center justify-center shrink-0 font-bold text-xl shadow-xs">
-                  <i className="fa-solid fa-file-lines"></i>
-                </div>
-              )}
-              <div className="overflow-hidden min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase ${
-                      selectedFile.type?.includes('pdf') || selectedFile.name.toLowerCase().endsWith('.pdf')
-                        ? 'bg-red-600 text-white'
-                        : selectedFile.isImage
-                        ? 'bg-emerald-600 text-white'
-                        : 'bg-indigo-600 text-white'
-                    }`}
-                  >
-                    {selectedFile.type?.includes('pdf') || selectedFile.name.toLowerCase().endsWith('.pdf')
-                      ? 'PDF ফাইল'
-                      : selectedFile.isImage
-                      ? 'ছবি'
-                      : 'ডকুমেন্ট'}
-                  </span>
-                  <p className="font-bold text-xs truncate max-w-[240px] sm:max-w-md">{selectedFile.name}</p>
-                </div>
-                <div className="flex items-center gap-2 mt-1 text-[11px] text-gray-500">
-                  <span>সাইজ: {selectedFile.sizeFormatted}</span>
-                  <span>•</span>
-                  <span className="text-emerald-700 font-semibold flex items-center gap-1">
-                    <i className="fa-solid fa-circle-check text-[10px]"></i>
-                    সংযুক্ত হয়েছে (পাঠানোর জন্য প্রস্তুত)
-                  </span>
-                </div>
-              </div>
+        {selectedFiles.length > 0 && !isReadingFile && (
+          <div className="mb-2.5 space-y-2 max-h-56 overflow-y-auto pr-1">
+            <div className="text-[11px] font-bold text-emerald-800 flex items-center justify-between bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200">
+              <span className="flex items-center gap-1.5">
+                <i className="fa-solid fa-circle-check text-emerald-600"></i>
+                মোট {selectedFiles.length} টি ফাইল সংযুক্ত হয়েছে (একসাথে বিশ্লেষণের জন্য প্রস্তুত)
+              </span>
+              <button
+                onClick={() => {
+                  setSelectedFiles([]);
+                  if (fileInputRef.current) fileInputRef.current.value = '';
+                }}
+                className="text-[10px] text-red-600 hover:underline font-semibold cursor-pointer"
+              >
+                সব মুছুন
+              </button>
             </div>
-            <button
-              onClick={handleRemoveFile}
-              className="bg-white/80 hover:bg-red-600 hover:text-white text-gray-600 border border-gray-200 rounded-full w-7 h-7 flex items-center justify-center text-xs shadow-xs cursor-pointer transition shrink-0"
-              title="ফাইল বাদ দিন"
-            >
-              ✕
-            </button>
+            {selectedFiles.map((file, index) => (
+              <div
+                key={index}
+                className={`relative flex items-center justify-between gap-3 p-2.5 rounded-xl border shadow-xs transition ${
+                  file.type?.includes('pdf') || file.name.toLowerCase().endsWith('.pdf')
+                    ? 'bg-red-50/90 border-red-200 text-red-950'
+                    : file.isImage
+                    ? 'bg-emerald-50/90 border-emerald-200 text-emerald-950'
+                    : 'bg-indigo-50/90 border-indigo-200 text-indigo-950'
+                }`}
+              >
+                <div className="flex items-center gap-3 min-w-0 overflow-hidden">
+                  {file.isImage ? (
+                    <img
+                      src={file.dataUrl}
+                      alt={file.name}
+                      className="w-10 h-10 object-cover rounded-lg border border-emerald-300 shrink-0 shadow-xs"
+                    />
+                  ) : file.type?.includes('pdf') || file.name.toLowerCase().endsWith('.pdf') ? (
+                    <div className="w-10 h-10 bg-red-600 text-white rounded-lg flex items-center justify-center shrink-0 font-bold text-lg shadow-xs">
+                      <i className="fa-solid fa-file-pdf"></i>
+                    </div>
+                  ) : (
+                    <div className="w-10 h-10 bg-indigo-600 text-white rounded-lg flex items-center justify-center shrink-0 font-bold text-lg shadow-xs">
+                      <i className="fa-solid fa-file-lines"></i>
+                    </div>
+                  )}
+                  <div className="overflow-hidden min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span
+                        className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase ${
+                          file.type?.includes('pdf') || file.name.toLowerCase().endsWith('.pdf')
+                            ? 'bg-red-600 text-white'
+                            : file.isImage
+                            ? 'bg-emerald-600 text-white'
+                            : 'bg-indigo-600 text-white'
+                        }`}
+                      >
+                        {file.type?.includes('pdf') || file.name.toLowerCase().endsWith('.pdf')
+                          ? 'PDF'
+                          : file.isImage
+                          ? 'ছবি'
+                          : 'ফাইল'}
+                      </span>
+                      <p className="font-bold text-xs truncate max-w-[220px] sm:max-w-md">{file.name}</p>
+                    </div>
+                    <div className="flex items-center gap-2 mt-0.5 text-[10px] text-gray-500">
+                      <span>সাইজ: {file.sizeFormatted}</span>
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={() => handleRemoveFile(index)}
+                  className="bg-white/90 hover:bg-red-600 hover:text-white text-gray-600 border border-gray-200 rounded-full w-6 h-6 flex items-center justify-center text-xs shadow-xs cursor-pointer transition shrink-0"
+                  title="ফাইল বাদ দিন"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
           </div>
         )}
+
 
         <div className="flex items-end gap-2 bg-slate-100 border border-gray-300 rounded-xl p-2 focus-within:border-indigo-500 focus-within:ring-2 focus-within:ring-indigo-100 transition">
           {/* File input button */}
           <label
             className={`p-2 cursor-pointer transition rounded-lg shrink-0 flex items-center justify-center relative ${
-              selectedFile
+              selectedFiles.length > 0
                 ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
                 : 'text-gray-500 hover:text-indigo-600 hover:bg-gray-200'
             }`}
-            title="PDF, ছবি বা যেকোনো ডকুমেন্ট আপলোড করুন"
+            title="একাধিক PDF, ছবি বা যেকোনো ডকুমেন্ট আপলোড করুন"
           >
             <i className="fa-solid fa-paperclip text-lg"></i>
-            {selectedFile && (
-              <span className="absolute -top-1 -right-1 w-3.5 h-3.5 bg-emerald-500 rounded-full border-2 border-white flex items-center justify-center text-[8px] text-white font-bold">
-                ✓
+            {selectedFiles.length > 0 && (
+              <span className="absolute -top-1 -right-1 w-4 h-4 bg-emerald-600 rounded-full border-2 border-white flex items-center justify-center text-[9px] text-white font-bold">
+                {selectedFiles.length}
               </span>
             )}
             <input
               ref={fileInputRef}
               type="file"
+              multiple
               accept=".pdf,application/pdf,.doc,.docx,.txt,.csv,.json,.xls,.xlsx,image/*"
               className="hidden"
               onChange={handleFileUpload}
@@ -1358,6 +1432,12 @@ export const ChatTab: React.FC = () => {
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={async (e) => {
+              if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+                e.preventDefault();
+                await processFiles(e.clipboardData.files);
+              }
+            }}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -1365,8 +1445,8 @@ export const ChatTab: React.FC = () => {
               }
             }}
             placeholder={
-              selectedFile
-                ? `"${selectedFile.name}" সম্পর্কিত প্রশ্ন লিখুন (বা সরাসরি পাঠান)...`
+              selectedFiles.length > 0
+                ? `সংযুক্ত ${selectedFiles.length} টি ফাইল সম্পর্কিত প্রশ্ন লিখুন (বা সরাসরি পাঠান)...`
                 : reservedBooks.some((b) => b.isActive)
                 ? 'Gemini-কে জিজ্ঞাসা করুন বা বইয়ের রেফারেন্স দিয়ে প্রশ্ন চান (যেমন: MQB পৃষ্ঠা ৫০)...'
                 : "Gemini-কে যেকোনো কিছু জিজ্ঞাসা করুন বা PDF ড্রপ করুন... (Enter চেপে পাঠান)"
@@ -1378,9 +1458,9 @@ export const ChatTab: React.FC = () => {
           {/* Send Button */}
           <button
             onClick={() => handleSend()}
-            disabled={isLoading || ((!input || !input.trim()) && !selectedFile && !reservedBooks.some((b) => b.isActive))}
+            disabled={isLoading || ((!input || !input.trim()) && selectedFiles.length === 0 && !reservedBooks.some((b) => b.isActive))}
             className={`p-2.5 rounded-lg text-white font-bold transition shrink-0 flex items-center justify-center cursor-pointer ${
-              isLoading || ((!input || !input.trim()) && !selectedFile && !reservedBooks.some((b) => b.isActive))
+              isLoading || ((!input || !input.trim()) && selectedFiles.length === 0 && !reservedBooks.some((b) => b.isActive))
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 : 'bg-indigo-600 hover:bg-indigo-700 shadow-sm'
             }`}

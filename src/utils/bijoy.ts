@@ -388,16 +388,19 @@ export function isEnglishOrCodeToken(str: string): boolean {
   if (/^(?:https?:\/\/|www\.)[a-zA-Z0-9\.\-_]+/i.test(trimmed)) return true;
   if (/^[a-zA-Z0-9\.\-_]+\.(com|org|net|gov|edu|bd|io|co)$/i.test(trimmed)) return true;
 
+  // 3. Math symbols / equations / operators
+  if (/^[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫\+\-\*\/\%\×\÷\±\°]+$/.test(trimmed)) return true;
+
   // Strip leading/trailing punctuation/brackets/quotes
   let core = trimmed.replace(/^[\s\p{P}\p{S}\u0964\u0965]+|[\s\p{P}\p{S}\u0964\u0965]+$/gu, '');
   if (!core) return true; // pure punctuation/numbers
 
   let lowerCore = core.toLowerCase();
 
-  // 3. Explicit known English tech / programming / exam keywords or single English option letters
+  // 4. Explicit known English tech / programming / exam keywords or single English option letters
   if (ENGLISH_KEYWORDS_SET.has(lowerCore)) return true;
 
-  // 4. Standalone English numbers or alphanumeric codes (like Set-A, Exam-15, GK-03, 2026, 2nd, 01, 02)
+  // 5. Standalone English numbers or alphanumeric codes (like Set-A, Exam-15, GK-03, 2026, 2nd, 01, 02)
   if (/^[a-zA-Z0-9\-\.\_]+$/.test(core)) {
     // If it contains numbers mixed with English letters (like 2nd, GK-03, Exam-15, Set-A, VAP-KHA)
     if (/[0-9]/.test(core) && /[a-zA-Z]/.test(core)) return true;
@@ -405,8 +408,8 @@ export function isEnglishOrCodeToken(str: string): boolean {
     if (/^[0-9]+$/.test(core)) return true;
   }
 
-  // 5. Check if it contains Bijoy-specific non-ASCII characters (like †, ˆ, ‡, ‰, ÿ, ¼, ½, ¾, Á, Â, Ã, etc.)
-  if (/[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(core)) {
+  // 6. Check if it contains Bijoy-specific non-ASCII characters
+  if (/[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(core)) {
     return false; // Definitely Bijoy
   }
 
@@ -472,8 +475,15 @@ export function normalizeUnicode(text: string): string {
 
 export function isBijoyText(text: string): boolean {
   if (!text) return false;
+  // If text contains Bengali Unicode characters or punctuation, it is Unicode, NOT Bijoy
   if (/[\u0964\u0965\u0980-\u09FF\?\!\,\;\:]/.test(text)) return false;
-  return /[‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»]/.test(text);
+
+  // If text is primarily standard math / English expression (e.g. contains =>, ∴, ⇒, ×, ÷, =, +, -, *, /), do not treat as Bijoy
+  if (/[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫]/.test(text)) return false;
+  if (/^[\s0-9a-zA-Z\+\-\*\/\=\%\(\)\[\]\{\}\<\>\.\,\:\;\!\?\_\–\—\×\÷\±\°\∠\$\#\^\&\*\®\©\™\⇒\∴]+$/.test(text)) return false;
+
+  // True Bijoy ANSI font text contains specific SutonnyMJ glyphs
+  return /[‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»]/.test(text);
 }
 
 export function convertToEnglishDigits(str: string): string {
@@ -498,7 +508,7 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
   // Strip leading and trailing punctuation, dandi (\u0964, \u0965), and whitespace to find the core word
   let core = trimmed.replace(/^[\s\p{P}\p{S}\u0964\u0965]+|[\s\p{P}\p{S}\u0964\u0965]+$/gu, '');
   if (!core) {
-    return /^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\s\u0964\u0965]+$/.test(trimmed);
+    return /^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\⇒\∴\×\÷\±\≠\≤\≥\≈\∞\π\θ\α\β\γ\δ\Δ\λ\μ\σ\ω\∑\∫\√\²\³\¹\⁰\ⁿ\₁\₂\₃\₀\ₙ\s\u0964\u0965]+$/.test(trimmed);
   }
 
   // If core contains any Bengali characters, it is not English
@@ -506,8 +516,8 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
     return false;
   }
 
-  // If it contains Bijoy ANSI specific characters, it is not English
-  if (/[ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ‡‰†šÍ¨]/.test(core)) {
+  // If it contains Bijoy ANSI specific characters, it is not English (excluding Unicode math operators like × and ÷)
+  if (/[ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ‡‰†šÍ¨]/.test(core)) {
     return false;
   }
 
@@ -516,8 +526,8 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
     return true;
   }
 
-  // If it consists entirely of digits / standard ASCII symbols
-  if (/^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\s]+$/.test(core)) {
+  // If it consists entirely of digits / standard ASCII & math symbols / LaTeX characters
+  if (/^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\⇒\∴\×\÷\±\≠\≤\≥\≈\∞\π\θ\α\β\γ\δ\Δ\λ\μ\σ\ω\∑\∫\√\²\³\¹\⁰\ⁿ\₁\₂\₃\₀\ₙ\s]+$/.test(core)) {
     return true;
   }
 
@@ -535,11 +545,11 @@ export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'Su
       if (!token.trim()) return token;
       if (isEnglishWord(token, customDictStr)) {
         return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${token}</span>`;
-      } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
-        let subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
+      } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]/.test(token)) {
+        let subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
         return subParts.map(part => {
           if (!part) return "";
-          if (isEnglishWord(part, customDictStr) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
+          if (isEnglishWord(part, customDictStr) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) {
             return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${part}</span>`;
           } else if (/[\u0980-\u09FF]/.test(part)) {
             if (fontType === 'SutonnyMJ') {
@@ -561,12 +571,12 @@ export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'Su
     }).join('');
   };
 
-  // If text contains HTML tags (such as <u>, </u>, <ins>, <b>, <i>, <mark>, etc.), split by HTML tags
+  // If text contains HTML tags (such as <u>, </u>, <ins>, <b>, <i>, <mark>, <span...>, <div...>, etc.), split by HTML tags
   if (/<[a-zA-Z\/][^>]*>/i.test(text)) {
-    const parts = text.split(/(<\/?[a-zA-Z0-9]+(?:\s+[^>]*?)?>)/gi);
+    const parts = text.split(/(<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>)/gi);
     return parts.map(part => {
       if (!part) return "";
-      if (/^<\/?[a-zA-Z0-9]+(?:\s+[^>]*?)?>$/i.test(part)) {
+      if (/^<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>$/i.test(part)) {
         if (/^<u\b/i.test(part) || /^<ins\b/i.test(part)) {
           return '<u style="text-decoration: underline;">';
         }

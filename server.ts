@@ -329,8 +329,16 @@ INSTRUCTIONS:
    - If any option text is HIGHLIGHTED with a GREEN or YELLOW background, or has a checkmark (✓), tick, or circle around it, place an asterisk (*) right after that option text (e.g. "(a) noun clause*").
    - If the answer is given in the margin/column beside the question as a letter inside a circle badge (e.g. a teal/green circle badge with 'a', 'b', 'c', or 'd' next to question 33, 34, etc.), identify that letter as the correct answer and mark that corresponding option with an asterisk (*) (e.g. if the circled letter next to question 33 is 'a', mark option '(a) noun clause*').
 4. Preserve question numbers (e.g., 01., 02., ১৫., ১৬.), options ((ক), (খ), (গ), (ঘ) or (a), (b), (c), (d)), references in brackets like [JU(C)'24-25, Pb,page-280], and explanations.
-5. Fix any physical distortion or blur logically so the Bengali and English words are spelled cleanly and correctly.
-6. Output ONLY the raw transcribed text. Do not add any conversational introductions, conclusions, or markdown code blocks.`;
+5. CRITICAL FOR FIGURES, DIAGRAMS, MIRROR IMAGES, SHAPES, & GEOMETRY:
+   - When a question or option contains a diagram, figure, drawing, shape, circuit, mirror image puzzle, or geometrical figure:
+     a) DO NOT skip or ignore the diagram, and DO NOT replace it with vague text like "(প্রদত্ত চিত্র)" or "(উত্তর চিত্র)".
+     b) If the figure can be visually reconstructed using SVG or clean HTML vector diagrams, generate a clean inline SVG (e.g. <svg width="220" height="120" viewBox="0 0 220 120" xmlns="http://www.w3.org/2000/svg">...</svg>) or HTML diagram representing the exact geometric shapes, arrows, lines, mirror lines, and option figures so that the diagram is visually drawn in full detail in the output!
+     c) If it is a complex photo or illustration, provide a clear, detailed descriptor tag or representation: e.g. [চিত্র: <চিত্রে কি দেখানো হয়েছে তার বিস্তারিত বিবরণ>] or [চিত্র / Figure].
+6. Fix any physical distortion or blur logically so the Bengali and English words are spelled cleanly and correctly.
+7. CRITICAL FOR MATHEMATICAL EQUATIONS & FRACTIONS:
+   - Transcribe all fractions in math equations and step-by-step solutions using standard LaTeX fraction format (e.g. \frac{x}{20} = \frac{20}{100 - x}).
+   - Preserve equation step symbols like ⇒, ∴, =, :, এবং, শর্তমতে:, সমাধান:.
+8. Output ONLY the raw transcribed text. Do not add any conversational introductions, conclusions, or markdown code blocks.`;
 
       const candidateModels = [
         "gemini-3.1-flash-lite",
@@ -749,12 +757,10 @@ ${text}`;
   // Gemini AI Chat Route
   app.post("/api/chat", express.json({ limit: "500mb" }), async (req: express.Request, res: express.Response) => {
     try {
-      const { messages, prompt, fileBase64, imageBase64, fileName, mimeType, fileText, reservedBooks } = req.body;
-      const actualBase64 = fileBase64 || imageBase64;
-      const actualMime = mimeType || "application/octet-stream";
-      const actualName = fileName || "file";
+      const { messages, prompt, files, fileBase64, imageBase64, fileName, mimeType, fileText, reservedBooks } = req.body;
+      const fileList = Array.isArray(files) ? files : ((fileBase64 || imageBase64 || fileText) ? [{ name: fileName || 'file', type: mimeType || 'application/octet-stream', dataUrl: fileBase64 || imageBase64, extractedText: fileText, isImage: !fileText && !!(fileBase64 || imageBase64) }] : []);
 
-      if ((!prompt || !prompt.trim()) && !actualBase64 && !fileText && (!reservedBooks || reservedBooks.length === 0)) {
+      if ((!prompt || !prompt.trim()) && fileList.length === 0 && (!reservedBooks || reservedBooks.length === 0)) {
         return res.status(400).json({ error: "প্রম্পট বা ফাইল প্রয়োজন।" });
       }
 
@@ -782,7 +788,7 @@ ${text}`;
    - যদি মূল ফাইল বা প্রশ্নে উত্তরের কোনো চিহ্ন উল্লেখ না থাকে, কিন্তু উত্তর নির্দেশ করতে হয় বা ব্যবহারকারী সমাধান চান, তবে স্বয়ংক্রিয়ভাবে সঠিক অপশনটির ঠিক পাশে একটি টিক চিহ্ন '✓' বসিয়ে দেবেন (যেমন: 'খ. গল্পকার ✓')। প্রশ্নের শেষে আলাদা করে 'সঠিক উত্তর: ...' লিখবেন না।
    - প্রতিটি প্রশ্ন ও তার ৪টি অপশন সুন্দরভাবে সুবিন্যস্ত লাইনে উপস্থাপন করুন (যেমন: ১। প্রশ্ন... ক. ... খ. ... গ. ... ঘ. ...)।
 ৩. উত্তর প্রদানে কোনো প্রকার বোল্ড টেক্সট (যেমন **ট্যাগের ভেতর**) বা ** মার্কিং ব্যবহার করবেন না। কোনো প্রশ্ন, অপশন, হেডিং বা সাধারণ বাক্যে অটোমেটিক বোল্ড করবেন না। সম্পূর্ণ রেসপন্স সাধারণ প্লেইন টেক্সট মোডে প্রদান করবেন।
-৪. ব্যবহারকারী যেকোনো ছবি বা ফাইল (যেমন প্রশ্নপত্রের ছবি, PDF, Word ডকুমেন্ট, Excel বা টেক্সট ফাইল) দিলে তা বিশ্লেষণ করে সমাধান ও নির্ভুলভাবে উপরে উল্লেখিত নিয়মে ফরম্যাট করে দিন।
+৪. ব্যবহারকারী যেকোনো ছবি বা ফাইল (যেমন প্রশ্নপত্রের ছবি, PDF, Word ডকুমেন্ট, Excel বা টেক্সট ফাইল) দিলে তা বিশ্লেষণ করে সমাধান ও নির্ভুলভাবে উপরে উল্লেখিত নিয়মে ফরম্যাট করে দিন। একাধিক ছবি বা ফাইল একসাথে দিলে সবগুলোর বিষয়বস্তু পুঙ্খানুপুঙ্খভাবে বিশ্লেষণ করবেন।
 ৫. ব্যবহারকারী যে ভাষায় (বাংলা বা ইংরেজি) প্রশ্ন করবেন, সেই ভাষায় সুন্দরভাবে রেসপন্স করবেন। সৌজন্যমূলক ও সহায়তাপূর্ণ মনোভাব বজায় রাখবেন।
 ৬. Book Reserve (বইয়ের রেফারেন্স থেকে প্রশ্ন সংগ্রহ): ব্যবহারকারী তার নিজস্ব সংরক্ষিত বই (Book Reserve) লাইব্রেরি থেকে বই প্রদান করেছেন। ব্যবহারকারী যখন কোনো বইয়ের রেফারেন্স (যেমন বইয়ের নাম/কোড, পৃষ্ঠা নম্বর, প্রশ্ন নম্বর, অনুশীলনী বা নির্দিষ্ট বিষয়) দিয়ে প্রশ্ন চাইবেন, তখন এই সংরক্ষিত বইগুলো থেকে সেই রেফারেন্স অনুযায়ী নির্ভুলভাবে মূল প্রশ্ন, অপশন ও সঠিক সমাধান খুঁজে বের করে উপরের নিয়ম অনুযায়ী (অপশনের পাশে টিক ✓ দিয়ে) সুন্দরভাবে ফরম্যাট করে দিন।`;
 
@@ -824,89 +830,95 @@ ${text}`;
         }
       }
 
-      // Handle attached file text or base64
-      if (fileText && typeof fileText === "string" && fileText.trim()) {
-        latestParts.push({
-          text: `[সংযুক্ত ফাইল: "${actualName}"]\nফাইলের বিষয়বস্তু:\n${fileText.trim().slice(0, 100000)}`
-        });
-      } else if (actualBase64) {
-        const cleanBase64 = actualBase64.replace(/^data:[^;]+;base64,/, "");
-        const buffer = Buffer.from(cleanBase64, "base64");
+      // Handle attached files (multiple or single)
+      for (const f of fileList) {
+        const fName = f.name || "file";
+        const fType = f.type || "application/octet-stream";
+        const fText = f.extractedText;
+        const fDataUrl = f.dataUrl;
 
-        const isDocx = actualMime.includes("wordprocessingml") || actualName.toLowerCase().endsWith(".docx");
-        const isPdf = actualMime.includes("pdf") || actualName.toLowerCase().endsWith(".pdf");
-        const isTextLike = actualMime.startsWith("text/") || 
-                           actualMime.includes("json") || 
-                           actualMime.includes("xml") || 
-                           actualName.toLowerCase().match(/\.(txt|csv|json|xml|html|css|js|ts|py|c|cpp|java|md|log)$/i);
+        if (fText && typeof fText === "string" && fText.trim()) {
+          latestParts.push({
+            text: `[সংযুক্ত ফাইল: "${fName}"]\nফাইলের বিষয়বস্তু:\n${fText.trim().slice(0, 100000)}`
+          });
+        } else if (fDataUrl) {
+          const cleanBase64 = fDataUrl.replace(/^data:[^;]+;base64,/, "");
+          const buffer = Buffer.from(cleanBase64, "base64");
 
-        if (isDocx) {
-          try {
-            const docxText = (await mammoth.extractRawText({ buffer })).value || "";
-            if (docxText.trim()) {
+          const isDocx = fType.includes("wordprocessingml") || fName.toLowerCase().endsWith(".docx");
+          const isPdf = fType.includes("pdf") || fName.toLowerCase().endsWith(".pdf");
+          const isTextLike = fType.startsWith("text/") || 
+                             fType.includes("json") || 
+                             fType.includes("xml") || 
+                             fName.toLowerCase().match(/\.(txt|csv|json|xml|html|css|js|ts|py|c|cpp|java|md|log)$/i);
+
+          if (isDocx) {
+            try {
+              const docxText = (await mammoth.extractRawText({ buffer })).value || "";
+              if (docxText.trim()) {
+                latestParts.push({
+                  text: `[ব্যবহারকারী একটি Word ডকুমেন্ট আপলোড করেছেন: "${fName}"]\nডকুমেন্টের বিষয়বস্তু:\n${docxText.trim().slice(0, 80000)}`
+                });
+              }
+            } catch (docErr) {
+              console.warn("Docx text extraction failed:", docErr);
+            }
+          } else if (isPdf) {
+            let extractedPdfText = "";
+            try {
+              if (typeof parsePdf === "function") {
+                const pdfData = await parsePdf(buffer);
+                extractedPdfText = pdfData?.text || "";
+              }
+            } catch (pdfErr) {
+              console.warn("PDF text extraction note:", pdfErr);
+            }
+
+            if (cleanBase64.length < 5000000) {
               latestParts.push({
-                text: `[ব্যবহারকারী একটি Word ডকুমেন্ট আপলোড করেছেন: "${actualName}"]\nডকুমেন্টের বিষয়বস্তু:\n${docxText.trim().slice(0, 80000)}`
+                inlineData: {
+                  mimeType: "application/pdf",
+                  data: cleanBase64
+                }
               });
             }
-          } catch (docErr) {
-            console.warn("Docx text extraction failed:", docErr);
-          }
-        } else if (isPdf) {
-          let extractedPdfText = "";
-          try {
-            if (typeof parsePdf === "function") {
-              const pdfData = await parsePdf(buffer);
-              extractedPdfText = pdfData?.text || "";
-            }
-          } catch (pdfErr) {
-            console.warn("PDF text extraction note:", pdfErr);
-          }
 
-          if (cleanBase64.length < 5000000) {
-            latestParts.push({
-              inlineData: {
-                mimeType: "application/pdf",
-                data: cleanBase64
-              }
-            });
-          }
-
-          if (extractedPdfText.trim().length > 10) {
-            latestParts.push({
-              text: `[PDF ফাইল নাম: "${actualName}"]\n[PDF টেক্সট এক্সট্রাকশন]:\n${extractedPdfText.trim().slice(0, 80000)}`
-            });
-          }
-        } else if (isTextLike) {
-          try {
-            const textContent = buffer.toString("utf-8");
-            if (textContent.trim()) {
+            if (extractedPdfText.trim().length > 10) {
               latestParts.push({
-                text: `[ব্যবহারকারী একটি ফাইল আপলোড করেছেন: "${actualName}"]\nফাইলের বিষয়বস্তু:\n${textContent.trim().slice(0, 80000)}`
+                text: `[PDF ফাইল নাম: "${fName}"]\n[PDF টেক্সট এক্সট্রাকশন]:\n${extractedPdfText.trim().slice(0, 80000)}`
               });
             }
-          } catch (txtErr) {
-            console.warn("Text decoding failed:", txtErr);
-          }
-        } else {
-          // Images / Other media (send inlineData if reasonable size)
-          let effectiveMime = actualMime;
-          if (effectiveMime === "image/jpg") effectiveMime = "image/jpeg";
-
-          if (cleanBase64.length < 8000000) {
-            latestParts.push({
-              inlineData: {
-                mimeType: effectiveMime,
-                data: cleanBase64
+          } else if (isTextLike) {
+            try {
+              const textContent = buffer.toString("utf-8");
+              if (textContent.trim()) {
+                latestParts.push({
+                  text: `[ব্যবহারকারী একটি ফাইল আপলোড করেছেন: "${fName}"]\nফাইলের বিষয়বস্তু:\n${textContent.trim().slice(0, 80000)}`
+                });
               }
-            });
+            } catch (txtErr) {
+              console.warn("Text decoding failed:", txtErr);
+            }
+          } else {
+            let effectiveMime = fType;
+            if (effectiveMime === "image/jpg") effectiveMime = "image/jpeg";
+
+            if (cleanBase64.length < 8000000) {
+              latestParts.push({
+                inlineData: {
+                  mimeType: effectiveMime,
+                  data: cleanBase64
+                }
+              });
+            }
           }
         }
       }
 
       if (prompt && prompt.trim()) {
         latestParts.push({ text: prompt.trim() });
-      } else if (actualBase64 && latestParts.length > 0) {
-        latestParts.push({ text: `[সংযুক্ত ফাইল: "${actualName}"] অনুগ্রহ করে এই ফাইলটির সমস্ত বিষয়বস্তু পুঙ্খানুপুঙ্খ বিশ্লেষণ করুন এবং প্রয়োজনীয় সকল প্রশ্নের সঠিক সমাধান ও বিস্তারিত ব্যাখ্যা প্রদান করুন।` });
+      } else if (fileList.length > 0 && latestParts.length > 0) {
+        latestParts.push({ text: `[সংযুক্ত ফাইলসমূহ (${fileList.length}টি)] অনুগ্রহ করে এই ফাইলগুলোর সমস্ত বিষয়বস্তু পুঙ্খানুপুঙ্খ বিশ্লেষণ করুন এবং প্রয়োজনীয় সকল প্রশ্নের সঠিক সমাধান ও বিস্তারিত ব্যাখ্যা প্রদান করুন।` });
       }
 
       if (contentsList.length > 0) {

@@ -76,24 +76,253 @@ export function fixQuotationUnderlines(text: string): string {
   return s;
 }
 
-export function cleanExplanationText(text: string): string {
-  if (!text) return "";
-  let s = text.trim();
-  let prev = "";
-  // Repeatedly strip leading explanation markers (e.g. "ব্যাখ্যা:", "Exp:", "Expl:", "Explanation:", "বিবরণ:", "Note:", etc.)
-  while (s !== prev) {
-    prev = s;
-    s = s.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]*\s*/gi, '').trim();
+export function convertLatexFractions(input: string): string {
+  if (!input) return input;
+  let s = input;
+
+  // 1. Convert LaTeX fractions \frac{num}{den}
+  if (/\\(frac|dfrac|tfrac)/.test(s)) {
+    let passes = 15;
+    while (/\\(frac|dfrac|tfrac)/.test(s) && passes > 0) {
+      passes--;
+      let prev = s;
+      s = s.replace(/\\(frac|dfrac|tfrac)\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g, (_, _cmd, num, den) => {
+        let n = num.trim();
+        let d = den.trim();
+        return `<math-fraction class="math-fraction" data-num="${n}" data-den="${d}" style="display: inline-block; vertical-align: -0.38em; margin: 0 3px; text-align: center; font-family: 'Cambria Math', 'Times New Roman', serif; line-height: 1; font-size: 0.95em; width: auto;"><span style="display: block; border-bottom: 1.2px solid currentColor; padding: 0 2px 1px 2px; text-align: center; line-height: 1;">${n}</span><span style="display: block; padding: 1px 2px 0 2px; text-align: center; line-height: 1;">${d}</span></math-fraction>`;
+      });
+
+      s = s.replace(/\\(frac|dfrac|tfrac)\s*([0-9a-zA-Z\u09E6-\u09EF])\s*([0-9a-zA-Z\u09E6-\u09EF])/g, (_, _cmd, num, den) => {
+        return `<math-fraction class="math-fraction" data-num="${num}" data-den="${den}" style="display: inline-block; vertical-align: -0.38em; margin: 0 3px; text-align: center; font-family: 'Cambria Math', 'Times New Roman', serif; line-height: 1; font-size: 0.95em; width: auto;"><span style="display: block; border-bottom: 1.2px solid currentColor; padding: 0 2px 1px 2px; text-align: center; line-height: 1;">${num}</span><span style="display: block; padding: 1px 2px 0 2px; text-align: center; line-height: 1;">${den}</span></math-fraction>`;
+      });
+
+      if (s === prev) break;
+    }
   }
 
-  // Strip trailing standalone answer markers (e.g., " d", " (d)", " [d]", " ঘ", " (ঘ)", " Ans: d", " Ans: (d)", " উত্তর: d")
-  s = s.replace(/(?:\s+|\b)(?:Ans|Answer|উত্তর|সঠিক উত্তর)?\s*[\(\（\[]?([ক-ঘa-d1-4১-৪])[\)\）\]]?\s*$/i, '').trim();
+  // 2. Convert parenthesized expressions over denominator: e.g. ((50 × 65) + (40 × x)) / 90 or (50 × 65 + 40 × x) / 90
+  s = s.replace(/\(\s*([^\n\(\)]+?(?:\([^\n\(\)]+\)[^\n\(\)]*?)*)\s*\)\s*\/\s*([a-zA-Z0-9\u09E6-\u09EF]+|\([^\n\(\)]+\))/g, (match, num, den) => {
+    let n = num.trim();
+    let d = den.replace(/^\(|\)$/g, '').trim();
+    if (n && d) {
+      return `<math-fraction class="math-fraction" data-num="${n}" data-den="${d}" style="display: inline-block; vertical-align: -0.38em; margin: 0 3px; text-align: center; font-family: 'Cambria Math', 'Times New Roman', serif; line-height: 1; font-size: 0.95em; width: auto;"><span style="display: block; border-bottom: 1.2px solid currentColor; padding: 0 2px 1px 2px; text-align: center; line-height: 1;">${n}</span><span style="display: block; padding: 1px 2px 0 2px; text-align: center; line-height: 1;">${d}</span></math-fraction>`;
+    }
+    return match;
+  });
+
+  // 3. Convert simple slash fractions in math context (e.g. x / 20 = 20 / (100 - x) or x / 24 = 24 / (68 - x) or 3/4)
+  s = s.replace(/([a-zA-Z0-9\u09E6-\u09EF]+)\s*\/\s*([a-zA-Z0-9\u09E6-\u09EF]+|\([^\n()]+\))/g, (match, num, den) => {
+    let n = num.trim();
+    let d = den.replace(/^\(|\)$/g, '').trim();
+    if (/^[a-zA-Z0-9\u09E6-\u09EF]+$/.test(n) && /^[a-zA-Z0-9\u09E6-\u09EF\+\-\*\×\÷\s]+$/.test(d)) {
+      return `<math-fraction class="math-fraction" data-num="${n}" data-den="${d}" style="display: inline-block; vertical-align: -0.38em; margin: 0 3px; text-align: center; font-family: 'Cambria Math', 'Times New Roman', serif; line-height: 1; font-size: 0.95em; width: auto;"><span style="display: block; border-bottom: 1.2px solid currentColor; padding: 0 2px 1px 2px; text-align: center; line-height: 1;">${n}</span><span style="display: block; padding: 1px 2px 0 2px; text-align: center; line-height: 1;">${d}</span></math-fraction>`;
+    }
+    return match;
+  });
 
   return s;
 }
 
+export function formatMathEquations(text: string): string {
+  if (!text) return text;
+  let s = text;
+
+  // 1. Convert LaTeX inline/block math delimiters ($...$ or $$...$$)
+  s = s.replace(/\$\$([\s\S]*?)\$\$/g, "$1")
+       .replace(/\$([^\$\n]+)\$/g, "$1");
+
+  // 2. Convert LaTeX operators and symbols
+  s = s.replace(/\\times/g, "×")
+       .replace(/\\div/g, "÷")
+       .replace(/\\pm/g, "±")
+       .replace(/\\mp/g, "∓")
+       .replace(/\\cdot|\\bullet/g, "·")
+       .replace(/\\neq|\\ne/g, "≠")
+       .replace(/\\leq|\\le/g, "≤")
+       .replace(/\\geq|\\ge/g, "≥")
+       .replace(/\\approx/g, "≈")
+       .replace(/\\equiv/g, "≡")
+       .replace(/\\propto/g, "∝")
+       .replace(/\\infty/g, "∞")
+       .replace(/\\pi/g, "π")
+       .replace(/\\theta/g, "θ")
+       .replace(/\\alpha/g, "α")
+       .replace(/\\beta/g, "β")
+       .replace(/\\gamma/g, "γ")
+       .replace(/\\delta/g, "δ")
+       .replace(/\\Delta/g, "Δ")
+       .replace(/\\lambda/g, "λ")
+       .replace(/\\Lambda/g, "Λ")
+       .replace(/\\mu/g, "μ")
+       .replace(/\\sigma/g, "σ")
+       .replace(/\\Sigma/g, "Σ")
+       .replace(/\\omega/g, "ω")
+       .replace(/\\Omega/g, "Ω")
+       .replace(/\\phi/g, "φ")
+       .replace(/\\Phi/g, "Φ")
+       .replace(/\\rho/g, "ρ")
+       .replace(/\\eta/g, "η")
+       .replace(/\\sum/g, "∑")
+       .replace(/\\prod/g, "∏")
+       .replace(/\\int/g, "∫")
+       .replace(/\\partial/g, "∂")
+       .replace(/\\nabla/g, "∇")
+       .replace(/\\to|\\rightarrow/g, "→")
+       .replace(/\\leftarrow/g, "←")
+       .replace(/\\leftrightarrow/g, "↔")
+       .replace(/\\Rightarrow|\\implies/g, "⇒")
+       .replace(/\\Leftarrow/g, "⇐")
+       .replace(/\\Leftrightarrow|\\iff/g, "⇔")
+       .replace(/\\in/g, "∈")
+       .replace(/\\notin/g, "∉")
+       .replace(/\\subset/g, "⊂")
+       .replace(/\\subseteq/g, "⊆")
+       .replace(/\\cup/g, "∪")
+       .replace(/\\cap/g, "∩")
+       .replace(/\\emptyset|\\varnothing/g, "∅")
+       .replace(/\\lim/g, "lim")
+       .replace(/\\because/g, "∵")
+       .replace(/\\therefore/g, "∴")
+       .replace(/\\degree|\^\{?\\circ\}?/g, "°")
+       .replace(/\\angle/g, "∠")
+       .replace(/\\parallel/g, "∥")
+       .replace(/\\perp/g, "⊥");
+
+  // 3. Convert ASCII step arrows and math symbol shorthands
+  s = s.replace(/=>|= >/g, "⇒")
+       .replace(/<=\|< =/g, "⇐")
+       .replace(/\.:\.|\:\:/g, "∴")
+       .replace(/==/g, "=");
+
+  // 4. Convert LaTeX fractions (\frac{x}{24} = \frac{24}{68-x} -> stacked vertical fraction)
+  s = convertLatexFractions(s);
+
+  // 5. Convert LaTeX square roots
+  s = s.replace(/\\sqrt\s*\[([^\]]+)\]\s*\{([^{}]+)\}/g, (_, root, inner) => {
+    let cleanInner = inner.trim();
+    return `<sup>${root}</sup><span style="font-family: 'Times New Roman', serif;"><span style="font-size: 1.15em; line-height: 1;">√</span><span style="border-top: 1.2px solid currentColor; padding-top: 1px; margin-left: -1px; display: inline-block;">${cleanInner}</span></span>`;
+  });
+  s = s.replace(/\\sqrt\s*\{([^{}]+)\}/g, (_, inner) => {
+    let cleanInner = inner.trim();
+    return `<span style="font-family: 'Times New Roman', serif;"><span style="font-size: 1.15em; line-height: 1;">√</span><span style="border-top: 1.2px solid currentColor; padding-top: 1px; margin-left: -1px; display: inline-block;">${cleanInner}</span></span>`;
+  });
+  s = s.replace(/\\sqrt\s*([0-9a-zA-Z\u09E6-\u09EF])/g, (_, inner) => {
+    return `<span style="font-family: 'Times New Roman', serif;"><span style="font-size: 1.15em; line-height: 1;">√</span><span style="border-top: 1.2px solid currentColor; padding-top: 1px; margin-left: -1px; display: inline-block;">${inner}</span></span>`;
+  });
+
+  // 6. Convert LaTeX parens, brackets, spaces, text wrappers
+  s = s.replace(/\\left\(/g, "(")
+       .replace(/\\right\)/g, ")")
+       .replace(/\\left\[/g, "[")
+       .replace(/\\right\]/g, "]")
+       .replace(/\\left\\\{/g, "{")
+       .replace(/\\right\\\}/g, "}")
+       .replace(/\\\{/g, "{")
+       .replace(/\\\}/g, "}")
+       .replace(/\\(quad|qquad|\,|\;|\:|\!)/g, " ")
+       .replace(/\\(text|mathrm|mathbf|mathit)\s*\{([^{}]+)\}/g, "$2");
+
+  // 7. Subscripts & Superscripts
+  s = s.replace(/\^\{([^{}]+)\}/g, "<sup>$1</sup>")
+       .replace(/\^([0-9a-zA-Z\u09E6-\u09EF])/g, "<sup>$1</sup>")
+       .replace(/_\{([^{}]+)\}/g, "<sub>$1</sub>")
+       .replace(/_([0-9a-zA-Z\u09E6-\u09EF])/g, "<sub>$1</sub>");
+
+  // 8. Ensure proper spacing around math operators: =, ⇒, ∴, ×, ÷, ±, ≠, ≤, ≥
+  s = s.replace(/([0-9a-zA-Z\u0980-\u09FF\)\%]+)\s*([=⇒∴×÷±≠≤≥])\s*([0-9a-zA-Z\u0980-\u09FF\(\%]+)/g, "$1 $2 $3");
+
+  // 9. Format math fraction slashes cleanly (e.g. x / 15 -> x/15, 32 / 4 -> 32/4)
+  s = s.replace(/([0-9a-zA-Z\u09E6-\u09EF]+)\s*\/\s*([0-9a-zA-Z\u09E6-\u09EF]+)/g, "$1/$2");
+
+  // 10. Multi-step equation formatting: break lines before inline ⇒ or ∴ if they follow a math expression
+  s = s.replace(/([^\n]{3,})\s+(⇒|∴)\s+/g, "$1\n$2 ");
+
+  return s;
+}
+
+export function cleanExplanationText(text: string): string {
+  if (!text) return "";
+  let s = text.trim();
+  let prev = "";
+  // Repeatedly strip leading explanation markers (e.g. "ব্যাখ্যা:", "Exp:", "Expl:", "Explanation:", "বিবরণ:", "Note:", "সমাধান:", etc.)
+  while (s !== prev) {
+    prev = s;
+    s = s.replace(/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো|সমাধান|সমাধানঃ|Solution|Sol)[\:\-\—\.\s]*\s*/gi, '').trim();
+  }
+
+  // Strip leading answer option markers attached to explanation (e.g., "(b) ১২০ অনুপাতের যোগফল..." -> "অনুপাতের যোগফল...")
+  s = s.replace(/^\s*[\(\（\[]?[ক-ঘa-d1-4১-৪0-4][\)\）\]]?\s*(?:[০-৯0-9]+\s*)?/i, '').trim();
+
+  // Strip trailing standalone answer markers ONLY if it's an isolated answer tag at end
+  let standaloneAnsPattern = /(?:\s+|\b)(?:Ans|Answer|উত্তর|সঠিক উত্তর)[:\s]*[\(\（\[]?([ক-ঘa-d1-4১-৪])[\)\）\]]?\s*$/i;
+  if (standaloneAnsPattern.test(s)) {
+    s = s.replace(standaloneAnsPattern, '').trim();
+  }
+
+  // Strip trailing tick marks (* or ✓ or ✔) attached to explanation
+  s = s.replace(/\s*[*✓✔√#]+\s*$/, '').trim();
+
+  // Format math equations inside explanation
+  s = formatMathEquations(s);
+
+  return s;
+}
+
+export function splitInlineExplanation(line: string): { optionLine: string; explanationLine: string } {
+  if (!line) return { optionLine: "", explanationLine: "" };
+  let trimmed = line.trim();
+  if (!trimmed) return { optionLine: "", explanationLine: "" };
+
+  // Do not split if line already starts with an explanation marker
+  if (/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Solution|Sol|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i.test(trimmed)) {
+    return { optionLine: "", explanationLine: trimmed };
+  }
+
+  // Look for inline explanation markers inside or at the end of option lines (e.g. "(d) ১৬০ বছর সমাধান: (b) ১২০...")
+  const expPattern = /(?:\s+|\b)(?:সমাধান|ব্যাখ্যা|উত্তরের\s*ব্যাখ্যা|Explanation|Solution|Sol|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i;
+  
+  let match = trimmed.match(expPattern);
+  if (match && match.index !== undefined && match.index > 0) {
+    let before = trimmed.substring(0, match.index).trim();
+    let after = trimmed.substring(match.index).trim();
+    if (before) {
+      return { optionLine: before, explanationLine: after };
+    }
+  }
+  return { optionLine: trimmed, explanationLine: "" };
+}
+
 /* ================= HELPER: REPAIR IMPLICIT OPTIONS ================= */
+export function extractInlineOptionsFromQuestion(b: QuestionBlock): void {
+  if (!b.questionText) return;
+  if (b.options.every(o => !o.trim())) {
+    let qText = b.questionText;
+    let match = qText.match(/^([\s\S]*?[\?\.\!\]])\s+([\s\S]*)$/);
+    if (match) {
+      let mainQ = match[1].trim();
+      let rest = match[2].trim();
+      
+      let refMatch = rest.match(/((?:MQB|TB|PB|Page|Ref|JU|DU|RU|CU|KU|BU|SU|IU|COU|BAU|BCS|MBA|BBA)[\s\S]*)$/i);
+      let refPart = "";
+      let optsStr = rest;
+      if (refMatch && refMatch.index !== undefined && refMatch.index > 0) {
+        optsStr = rest.substring(0, refMatch.index).trim();
+        refPart = refMatch[1].trim();
+      }
+
+      if (refPart) {
+        b.reference = b.reference ? b.reference + "; " + refPart : refPart;
+      }
+
+      b.questionText = mainQ;
+      b.options[0] = optsStr;
+    }
+  }
+}
+
 export function repairImplicitOptions(b: QuestionBlock): void {
+  extractInlineOptionsFromQuestion(b);
+
   // Strip trailing "সঠিক উত্তর: [উত্তর]" or "উত্তর: ..." attached to options
   for (let i = 0; i < 4; i++) {
     let opt = b.options[i] || '';
@@ -136,7 +365,8 @@ export function repairImplicitOptions(b: QuestionBlock): void {
     const raw = b.options[i] || '';
     if (!raw.trim()) continue;
 
-    let parts = raw.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+    let containsMath = /[\=\⇒\∴\∵\×\÷\±\≠\≤\≥\^]/.test(raw) || /\b[a-zA-Z]\s*[\/\*+\-]\s*[০-৯\d]+/i.test(raw);
+    let parts = (!containsMath) ? raw.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean) : [raw.trim()];
     if (parts.length > 1) {
       for (const p of parts) {
         const hasT = /[✓✔\*√#]/.test(p) || (b.correctAnswerIndex === i && parts.length === 1);
@@ -151,7 +381,8 @@ export function repairImplicitOptions(b: QuestionBlock): void {
   }
 
   // If we have fewer than 4 tokens, try splitting tokens with multiple single-spaced words
-  if (allTokens.length < 4 && allTokens.length > 0) {
+  let hasMathInTokens = allTokens.some(t => /[\=\⇒\∴\∵\×\÷\±\≠\≤\≥\^]/.test(t.text));
+  if (!hasMathInTokens && allTokens.length < 4 && allTokens.length > 0) {
     if (allTokens.length === 3) {
       let splitDone = false;
       for (let tIdx = 0; tIdx < allTokens.length; tIdx++) {
@@ -239,7 +470,8 @@ export function repairImplicitOptions(b: QuestionBlock): void {
 
 /* ================= STANDARD PARSER (For Text Box Formatter & Converter) ================= */
 export function parseQuestions(text: string): QuestionBlock[] {
-  let rawLines = text.split('\n');
+  let formattedText = formatMathEquations(text || "");
+  let rawLines = formattedText.split('\n');
   let processedLines: string[] = [];
 
   const checkIsRefTag = (line: string): boolean => {
@@ -295,20 +527,31 @@ export function parseQuestions(text: string): QuestionBlock[] {
   let lines: string[] = [];
   for (let l of processedLines) {
     let trimmed = l.trim();
-    let multiOptMatches = trimmed.match(/(?:(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi);
-    if (multiOptMatches && multiOptMatches.length > 1) {
-      let parts = trimmed.split(/(?=(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s+|[\(\（\[][ক-ঘa-d][\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
-      lines.push(...parts);
-    } else {
-      let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(trimmed);
-      let tabOrSpaceParts = trimmed.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
-      if (!isQStart && !checkIsRefTag(trimmed) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
-        if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
-          lines.push(...tabOrSpaceParts);
-          continue;
+    if (!trimmed) continue;
+
+    let { optionLine, explanationLine } = splitInlineExplanation(trimmed);
+
+    if (optionLine) {
+      let multiOptMatches = optionLine.match(/(?:(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s*(?![+\-*\/=^×÷±≠≤≥,])|[\(\（\[][ক-ঘa-d][\)\）\]]\s*(?![+\-*\/=^×÷±≠≤≥,]))/gi);
+      if (multiOptMatches && multiOptMatches.length > 1) {
+        let parts = optionLine.split(/(?=(?:^|\s+)[\(\（\[]?[ক-ঘa-d][\)\）\]\.\:]\s*(?![+\-*\/=^×÷±≠≤≥,])|[\(\（\[][ক-ঘa-d][\)\）\]]\s*(?![+\-*\/=^×÷±≠≤≥,]))/gi).map(p => p.trim()).filter(Boolean);
+        lines.push(...parts);
+      } else {
+        let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(optionLine);
+        let containsMath = /[\=\⇒\∴\∵\×\÷\±\≠\≤\≥\^]/.test(optionLine) || /\b[a-zA-Z]\s*[\/\*+\-]\s*[০-৯\d]+/i.test(optionLine);
+        let tabOrSpaceParts = optionLine.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+        if (!isQStart && !containsMath && !checkIsRefTag(optionLine) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
+          if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
+            lines.push(...tabOrSpaceParts);
+            if (explanationLine) lines.push(explanationLine);
+            continue;
+          }
         }
+        lines.push(optionLine);
       }
-      lines.push(l);
+    }
+    if (explanationLine) {
+      lines.push(explanationLine);
     }
   }
 
@@ -320,7 +563,13 @@ export function parseQuestions(text: string): QuestionBlock[] {
   let lastActiveField: 'question' | 'option0' | 'option1' | 'option2' | 'option3' | 'explanation' = 'question';
 
   const isExplicitOption = (line: string): boolean => {
-    return /^\s*[\(\（\[]*([ক-ঘa-dA-D])[\)\）\]\.\:]\s*(.*)/i.test(line);
+    if (!line) return false;
+    let trimmed = line.trim();
+    if (/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Solution|Sol|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i.test(trimmed)) {
+      return false;
+    }
+    let match = trimmed.match(/^\s*[\(\（\[]*([ক-ঘa-dA-D])[\)\）\]\.\:]\s*(?![+\-*\/=^×÷±≠≤≥,])(.*)/i);
+    return Boolean(match);
   };
 
   const isQuestionStart = (line: string, cb?: QuestionBlock | null): boolean => {
@@ -600,7 +849,8 @@ export function parseQuestions(text: string): QuestionBlock[] {
         if (hasTick) currentBlock.hasTickMark = true;
       } else if (currentBlockLineIndex >= implicitOptStartIdx && currentBlockLineIndex < implicitOptStartIdx + 4) {
         let optIdx = currentBlockLineIndex - implicitOptStartIdx;
-        currentBlock.options[optIdx] = cleanLine;
+        let optText = cleanLine.replace(/^\s*[\(\–\-\—\(\（\[]?([ক-ঘa-dA-D])[\)\）\]\.\:]\s*/i, '').trim();
+        currentBlock.options[optIdx] = optText;
         lastActiveField = `option${optIdx}` as any;
         if (hasTick) {
           currentBlock.hasTickMark = true;
@@ -791,20 +1041,31 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
   let lines: string[] = [];
   for (let l of processedLines) {
     let trimmed = l.trim();
-    let multiOptMatches = trimmed.match(/(?:(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi);
-    if (multiOptMatches && multiOptMatches.length > 1) {
-      let parts = trimmed.split(/(?=(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s+|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*)/gi).map(p => p.trim()).filter(Boolean);
-      lines.push(...parts);
-    } else {
-      let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(trimmed);
-      let tabOrSpaceParts = trimmed.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
-      if (!isQStart && !checkIsRefTag(trimmed) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
-        if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
-          lines.push(...tabOrSpaceParts);
-          continue;
+    if (!trimmed) continue;
+
+    let { optionLine, explanationLine } = splitInlineExplanation(trimmed);
+
+    if (optionLine) {
+      let multiOptMatches = optionLine.match(/(?:(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s*(?![+\-*\/=^×÷±≠≤≥,])|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*(?![+\-*\/=^×÷±≠≤≥,]))/gi);
+      if (multiOptMatches && multiOptMatches.length > 1) {
+        let parts = optionLine.split(/(?=(?:^|\s+)[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]\.\:]\s*(?![+\-*\/=^×÷±≠≤≥,])|[\(\（\[](?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)[\)\）\]]\s*(?![+\-*\/=^×÷±≠≤≥,]))/gi).map(p => p.trim()).filter(Boolean);
+        lines.push(...parts);
+      } else {
+        let isQStart = /^\s*([০-৯\d]{1,3})\s*[\.\)و।\-:]\s*(.*)/.test(optionLine);
+        let containsMath = /[\=\⇒\∴\∵\×\÷\±\≠\≤\≥\^]/.test(optionLine) || /\b[a-zA-Z]\s*[\/\*+\-]\s*[০-৯\d]+/i.test(optionLine);
+        let tabOrSpaceParts = optionLine.split(/\t+|\s{2,}/).map(p => p.trim()).filter(Boolean);
+        if (!isQStart && !containsMath && !checkIsRefTag(optionLine) && tabOrSpaceParts.length >= 2 && tabOrSpaceParts.length <= 4) {
+          if (tabOrSpaceParts.every(p => p.length < 60 && !/[।\?]/.test(p))) {
+            lines.push(...tabOrSpaceParts);
+            if (explanationLine) lines.push(explanationLine);
+            continue;
+          }
         }
+        lines.push(optionLine);
       }
-      lines.push(l);
+    }
+    if (explanationLine) {
+      lines.push(explanationLine);
     }
   }
 
@@ -829,7 +1090,11 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
 
   const isExplicitOption = (line: string): boolean => {
     if (!line) return false;
-    let match = line.match(/^\s*[\(\（\[]?\s*([ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)\s*[\)\）\]\.\-\:\s]\s*(.*)/i);
+    let trimmed = line.trim();
+    if (/^\s*(?:ব্যাখ্যা|ব্যাখ্যাঃ|উত্তরের\s*ব্যাখ্যা|উত্তরের\s*ব্যাখ্যাঃ|Explanation|Solution|Sol|Expla|Expl|Exp|বিবরণ|Note|Ans|Answer|সঠিক\s*উত্তর|উত্তর|বিশেষ\s*দ্রষ্টব্য|জেনে\s*রাখো|জেনে\s*রাখা\s*ভালো)[\:\-\—\.\s]/i.test(trimmed)) {
+      return false;
+    }
+    let match = trimmed.match(/^\s*[\(\（\[]?\s*([ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪]|i{1,3}|iv)\s*[\)\）\]\.\-\:\s]\s*(?![+\-*\/=^×÷±≠≤≥,])(.*)/i);
     if (!match) return false;
     let idx = getOptionIndex(match[1]);
     return idx !== undefined;
@@ -1142,7 +1407,8 @@ export function parseVersionQuestions(text: string): QuestionBlock[] {
         if (hasTick) currentBlock.hasTickMark = true;
       } else if (currentBlockLineIndex >= implicitOptStartIdx && currentBlockLineIndex < implicitOptStartIdx + 4) {
         let optIdx = currentBlockLineIndex - implicitOptStartIdx;
-        currentBlock.options[optIdx] = cleanLine;
+        let optText = cleanLine.replace(/^\s*[\(\（\[]?([ক-ঘa-dA-D])[\)\）\]\.\:]\s*/i, '').trim();
+        currentBlock.options[optIdx] = optText;
         lastActiveField = `option${optIdx}` as any;
         if (hasTick) {
           currentBlock.hasTickMark = true;
@@ -1704,9 +1970,10 @@ export function generateVersionFormattedTableHtml(
 
 export function formatConverterTextOutput(rawText: string): string {
   if (!rawText || !rawText.trim()) return "";
-  let blocks = parseQuestions(rawText);
+  let formattedInput = formatMathEquations(rawText);
+  let blocks = parseQuestions(formattedInput);
   if (blocks.length === 0) {
-    return rawText.trim();
+    return formattedInput.trim();
   }
   let resultStr = "";
   blocks.forEach((item, idx) => {
@@ -1724,9 +1991,8 @@ export function formatConverterTextOutput(rawText: string): string {
     resultStr += `${numStr}. ` + item.questionText + "\n";
     item.options.forEach((opt, optIdx) => {
       if (opt) {
-        let optLetter = ['ক', 'খ', 'গ', 'ঘ'][optIdx];
         let isCorrect = item.hasTickMark && item.correctAnswerIndex === optIdx;
-        resultStr += `(${optLetter}) ${opt}${isCorrect ? '*' : ''}\n`;
+        resultStr += `${opt}${isCorrect ? '*' : ''}\n`;
       }
     });
     if (item.explanation && item.explanation.trim()) {

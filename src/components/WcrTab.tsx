@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import JSZip from 'jszip';
 import { unicodeToBijoy, isEnglishWord } from '../utils/bijoy';
 import { parseQuestions, generateFormattedTableHtml } from '../utils/parser';
+import { prepareHtmlForDocxWithMath, patchDocxXmlWithOmml } from '../utils/mathOmml';
+import { convertHtmlToNativeDocxBlob } from '../utils/docxExportBuilder';
 
 interface WcrTabProps {
   customDict?: string;
@@ -169,34 +171,21 @@ export function WcrTab({ customDict = '' }: WcrTabProps) {
       }
 
       const primaryFont = targetFont;
-      const htmlContent = `<!DOCTYPE html><html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><style>body { font-family: 'Times New Roman', '${primaryFont}', 'SolaimanLipi', sans-serif; font-size: 10pt; line-height: 1.15; } p { margin: 0; padding: 0; margin-bottom: 4px; } table { border-collapse: collapse; width: 100%; } td { border: 1px solid #000; padding: 4px; }</style></head><body><div class="Section1">${formattedHtml}</div></body></html>`;
+      const htmlContent = `<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>${formattedHtml}</body></html>`;
 
       let blob: Blob;
-      if (window.htmlDocx) {
-        blob = window.htmlDocx.asBlob(htmlContent, {
-          orientation: 'portrait',
-          margins: { top: 720, bottom: 720, left: 720, right: 720 }
-        });
-
-        // Patch DOCX zip using JSZip for accurate font tags
-        try {
-          const zip = await JSZip.loadAsync(blob);
-          let docXml = await zip.file("word/document.xml")?.async("string");
-          if (docXml) {
-            docXml = docXml.replace(/<w:pgSz\b[^>]*\/>/g, '<w:pgSz w:w="11906" w:h="16838" w:orient="portrait"/>');
-            if (targetFont === 'SutonnyMJ') {
-              docXml = docXml.replace(/<w:rFonts\b[^>]*\/>/gi, `<w:rFonts w:ascii="SutonnyMJ" w:hAnsi="SutonnyMJ" w:cs="SutonnyMJ" w:eastAsia="SutonnyMJ"/>`);
-            } else {
-              docXml = docXml.replace(/<w:rFonts\b[^>]*\/>/gi, `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`);
-            }
-            zip.file("word/document.xml", docXml);
-            blob = await zip.generateAsync({ type: 'blob' });
-          }
-        } catch (zipErr) {
-          console.warn("Docx zip patch note:", zipErr);
+      try {
+        blob = await convertHtmlToNativeDocxBlob(htmlContent, primaryFont);
+      } catch (docxErr) {
+        console.warn("WCR native DOCX note, fallback:", docxErr);
+        if (window.htmlDocx) {
+          blob = window.htmlDocx.asBlob(htmlContent, {
+            orientation: 'portrait',
+            margins: { top: 720, bottom: 720, left: 720, right: 720 }
+          });
+        } else {
+          blob = new Blob([htmlContent], { type: 'application/msword' });
         }
-      } else {
-        blob = new Blob([htmlContent], { type: 'application/msword' });
       }
 
       const url = URL.createObjectURL(blob);

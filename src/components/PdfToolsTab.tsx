@@ -133,6 +133,7 @@ export function PdfToolsTab() {
   // Universal state for active tool
   const [files, setFiles] = useState<File[]>([]);
   const [secondFile, setSecondFile] = useState<File | null>(null); // For compare PDF
+  const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isProcessing, setIsProcessing] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<string>('');
   const [errMsg, setErrMsg] = useState<string>('');
@@ -140,6 +141,65 @@ export function PdfToolsTab() {
   const [resultFileName, setResultFileName] = useState<string>('');
   const [resultText, setResultText] = useState<string>('');
   const [extractedJpgs, setExtractedJpgs] = useState<string[]>([]);
+  const [copiedText, setCopiedText] = useState<boolean>(false);
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const droppedFiles = Array.from(e.dataTransfer.files);
+      if (selectedTool === 'merge-pdf' || selectedTool === 'jpg-to-pdf' || selectedTool === 'scan-to-pdf') {
+        setFiles(prev => [...prev, ...droppedFiles]);
+      } else {
+        setFiles([droppedFiles[0]]);
+      }
+    }
+  };
+
+  const handleCopyText = () => {
+    if (!resultText) return;
+    navigator.clipboard.writeText(resultText);
+    setCopiedText(true);
+    setTimeout(() => setCopiedText(false), 2000);
+  };
+
+  const handleDownloadTxt = () => {
+    if (!resultText) return;
+    const blob = new Blob([resultText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = (resultFileName || 'extracted_text').replace(/\.[^/.]+$/, "") + '.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDownloadDocx = async () => {
+    if (!resultText) return;
+    const filename = (resultFileName || 'extracted_text').replace(/\.[^/.]+$/, "") + '.docx';
+    await downloadAsDocx(resultText, filename);
+  };
+
+  const handleDownloadPdf = () => {
+    if (!resultText) return;
+    const doc = new jsPDF();
+    const splitTitle = doc.splitTextToSize(resultText, 180);
+    doc.text(splitTitle, 15, 20);
+    doc.save((resultFileName || 'extracted_text').replace(/\.[^/.]+$/, "") + '.pdf');
+  };
 
   // Tool specific configurations
   const [pagesInput, setPagesInput] = useState<string>('1'); // for split/extract/remove/rotate
@@ -398,6 +458,17 @@ export function PdfToolsTab() {
     if (!selectedTool) return;
     setErrMsg('');
     setStatusMsg('');
+
+    if (selectedTool !== 'html-to-pdf' && files.length === 0) {
+      setErrMsg('একটি PDF বা প্রয়োজনীয় ডকুমেন্ট ফাইল নির্বাচন করুন।');
+      return;
+    }
+
+    if (selectedTool === 'merge-pdf' && files.length < 2) {
+      setErrMsg('Merge করার জন্য অন্তত ২ বা তার বেশি PDF ফাইল নির্বাচন করুন।');
+      return;
+    }
+
     setIsProcessing(true);
 
     try {
@@ -838,7 +909,14 @@ export function PdfToolsTab() {
 
             <div
               onClick={() => fileInputRef.current?.click()}
-              className="border-2 border-dashed border-red-300 hover:border-red-500 bg-red-50/50 hover:bg-red-50 rounded-2xl p-8 text-center cursor-pointer transition-all space-y-3"
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
+              className={`border-2 border-dashed rounded-2xl p-8 text-center cursor-pointer transition-all space-y-3 ${
+                isDragging
+                  ? 'border-red-600 bg-red-100/80 scale-[1.01]'
+                  : 'border-red-300 hover:border-red-500 bg-red-50/50 hover:bg-red-50'
+              }`}
             >
               <div className="w-12 h-12 bg-white text-red-600 rounded-full flex items-center justify-center mx-auto shadow-sm text-xl">
                 <i className="fa-solid fa-cloud-arrow-up"></i>
@@ -865,7 +943,14 @@ export function PdfToolsTab() {
                     : '.pdf,application/pdf,.docx,.xlsx,.pptx'
                 }
                 onChange={e => {
-                  if (e.target.files) setFiles(Array.from(e.target.files));
+                  if (e.target.files && e.target.files.length > 0) {
+                    const selected = Array.from(e.target.files);
+                    if (selectedTool === 'merge-pdf' || selectedTool === 'jpg-to-pdf' || selectedTool === 'scan-to-pdf') {
+                      setFiles(prev => [...prev, ...selected]);
+                    } else {
+                      setFiles(selected);
+                    }
+                  }
                 }}
                 className="hidden"
               />
@@ -873,13 +958,49 @@ export function PdfToolsTab() {
 
             {/* List selected files */}
             {files.length > 0 && (
-              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1">
-                <span className="text-xs font-bold text-gray-600 block">নির্বাচিত ফাইলসমূহ:</span>
-                <div className="max-h-32 overflow-y-auto space-y-1">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-gray-700">নির্বাচিত ফাইলসমূহ ({files.length}টি):</span>
+                  <div className="flex items-center gap-2">
+                    {(selectedTool === 'merge-pdf' || selectedTool === 'jpg-to-pdf' || selectedTool === 'scan-to-pdf') && (
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="text-xs font-bold text-red-700 hover:text-red-800 flex items-center gap-1 bg-white px-2 py-1 rounded border border-gray-200"
+                      >
+                        <i className="fa-solid fa-plus"></i> আরও ফাইল যুক্ত করুন
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setFiles([])}
+                      className="text-xs font-bold text-gray-500 hover:text-red-600 bg-white px-2 py-1 rounded border border-gray-200"
+                    >
+                      সবাইকে মুছুন
+                    </button>
+                  </div>
+                </div>
+                <div className="max-h-36 overflow-y-auto space-y-1.5">
                   {files.map((f, idx) => (
-                    <div key={idx} className="text-xs text-gray-700 flex items-center justify-between bg-white px-3 py-1.5 rounded-lg border border-slate-100">
-                      <span className="truncate max-w-xs">{f.name}</span>
-                      <span className="text-[10px] text-gray-400 font-mono">{(f.size / 1024).toFixed(1)} KB</span>
+                    <div key={idx} className="text-xs text-gray-700 flex items-center justify-between bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-2xs">
+                      <div className="flex items-center gap-2 truncate max-w-xs">
+                        <i className="fa-solid fa-file-pdf text-red-600"></i>
+                        <span className="truncate">{f.name}</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-gray-400 font-mono">{(f.size / 1024).toFixed(1)} KB</span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setFiles(files.filter((_, i) => i !== idx));
+                          }}
+                          className="text-gray-400 hover:text-red-600 p-0.5 rounded transition-colors"
+                          title="ফাইল বাদ দিন"
+                        >
+                          <i className="fa-solid fa-xmark text-sm"></i>
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1029,15 +1150,64 @@ export function PdfToolsTab() {
           </div>
         )}
 
-        {/* Text Result Display */}
+        {/* Text Result Display with Download & Copy Buttons */}
         {resultText && (
-          <div className="space-y-2">
-            <h4 className="font-bold text-gray-800 text-sm">ফলাফল টেক্সট:</h4>
+          <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200 pb-3">
+              <h4 className="font-bold text-gray-800 text-sm flex items-center gap-2">
+                <i className="fa-solid fa-file-lines text-red-600"></i>
+                ফলাফল টেক্সট (Extracted Text):
+              </h4>
+
+              {/* Action Buttons: Copy & Downloads */}
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  onClick={handleCopyText}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 shadow-xs ${
+                    copiedText
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-white hover:bg-slate-100 text-slate-800 border border-slate-300'
+                  }`}
+                  title="টেক্সট কপি করুন"
+                >
+                  <i className={`fa-solid ${copiedText ? 'fa-check text-white' : 'fa-copy text-blue-600'}`}></i>
+                  <span>{copiedText ? 'কপি হয়েছে!' : 'কপি করুন'}</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadDocx}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-xs"
+                  title="Word (.docx) হিসেবে ডাউনলোড করুন"
+                >
+                  <i className="fa-solid fa-file-word"></i>
+                  <span>Word (.docx)</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadTxt}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-xs"
+                  title="TXT (.txt) হিসেবে ডাউনলোড করুন"
+                >
+                  <i className="fa-solid fa-file-lines"></i>
+                  <span>TXT (.txt)</span>
+                </button>
+
+                <button
+                  onClick={handleDownloadPdf}
+                  className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-xs"
+                  title="PDF (.pdf) হিসেবে ডাউনলোড করুন"
+                >
+                  <i className="fa-solid fa-file-pdf"></i>
+                  <span>PDF (.pdf)</span>
+                </button>
+              </div>
+            </div>
+
             <textarea
               readOnly
-              rows={8}
+              rows={10}
               value={resultText}
-              className="w-full p-3 bg-slate-50 border border-gray-300 rounded-xl text-xs font-mono text-gray-800 focus:outline-none"
+              className="w-full p-3.5 bg-white border border-gray-300 rounded-xl text-xs font-mono text-gray-800 focus:outline-none focus:ring-2 focus:ring-red-500 shadow-inner"
             />
           </div>
         )}

@@ -1,5 +1,7 @@
 import { Document, Packer, Paragraph, TextRun, HeadingLevel } from 'docx';
+import JSZip from 'jszip';
 import { isEnglishWord } from './bijoy';
+import { prepareHtmlForDocxWithMath, patchDocxXmlWithOmml } from './mathOmml';
 
 function createMixedFontTextRuns(text: string, isBold: boolean = false): TextRun[] {
   const runs: TextRun[] = [];
@@ -18,11 +20,11 @@ function createMixedFontTextRuns(text: string, isBold: boolean = false): TextRun
 
     if (isEnglishWord(token)) {
       runs.push(new TextRun({ text: token, font: timesFontObj, bold: isBold, italics: false }));
-    } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9]/.test(token)) {
-      const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
+    } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]/.test(token)) {
+      const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
       for (const part of subParts) {
         if (!part) continue;
-        if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
+        if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) {
           runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false }));
         } else if (/[\u0980-\u09FF]/.test(part)) {
           runs.push(new TextRun({ text: part, font: solaimanFontObj, bold: isBold, italics: false }));
@@ -168,7 +170,27 @@ export async function downloadAsDocx(text: string, filename: string = 'Gemini_Ch
       ],
     });
 
-    const blob = await Packer.toBlob(doc);
+    let blob = await Packer.toBlob(doc);
+
+    // Patch with OMML equations if any LaTeX math is found in text
+    try {
+      const { ommlMap } = prepareHtmlForDocxWithMath(text);
+      if (ommlMap.size > 0) {
+        const zip = await JSZip.loadAsync(blob);
+        let docXml = await zip.file("word/document.xml")?.async("string");
+        if (docXml) {
+          docXml = patchDocxXmlWithOmml(docXml, ommlMap);
+          zip.file("word/document.xml", docXml);
+          blob = await zip.generateAsync({
+            type: 'blob',
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          });
+        }
+      }
+    } catch (mathErr) {
+      console.warn('Math OMML patching note:', mathErr);
+    }
+
     triggerBlobDownload(blob, safeFilename);
   } catch (error) {
     console.warn('Docx Packer failed, falling back to HTML Word doc:', error);

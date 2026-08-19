@@ -20,7 +20,8 @@ import {
   generateVersionFormattedTableHtml,
   formatConverterTextOutput,
   formatBlocksToStructuredText,
-  cleanExplanationText
+  cleanExplanationText,
+  formatMathEquations
 } from './utils/parser';
 import { translateBengaliToEnglish, localRuleBasedTranslate } from './utils/translate';
 import { ChatTab } from './components/ChatTab';
@@ -28,9 +29,13 @@ import { WcrTab } from './components/WcrTab';
 import { PdfToolsTab } from './components/PdfToolsTab';
 import { NewspaperTab } from './components/NewspaperTab';
 import { ImportantWebTab } from './components/ImportantWebTab';
+import { ErrorCheckerTab } from './components/ErrorCheckerTab';
 import { QuickLinksMenu } from './components/QuickLinksMenu';
 import { BookHistoryModal } from './components/BookHistoryModal';
 import { AuthorProfileModal } from './components/AuthorProfileModal';
+import { MathToolbar, QuickMathBar } from './components/MathToolbar';
+import { prepareHtmlForDocxWithMath, patchDocxXmlWithOmml } from './utils/mathOmml';
+import { convertHtmlToNativeDocxBlob } from './utils/docxExportBuilder';
 import {
   HistoryBook,
   saveHistoryBook,
@@ -58,7 +63,7 @@ export interface QcBook {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'converter' | 'important-web' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat' | 'wcr' | 'pdf-tools' | 'newspaper'>('converter');
+  const [activeTab, setActiveTab] = useState<'converter' | 'important-web' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat' | 'wcr' | 'pdf-tools' | 'newspaper' | 'error-checker'>('converter');
   const [subjectCode, setSubjectCode] = useState<'Ban' | 'Eng' | 'GK'>('Ban');
 
   const [converterPreviewText, setConverterPreviewText] = useState<string>('');
@@ -400,6 +405,13 @@ export default function App() {
   const [customDict, setCustomDict] = useState<string>('');
   const [dictMsg, setDictMsg] = useState<string>('');
 
+  // Math Toolbar State & Textarea Refs
+  const [isMathToolbarOpen, setIsMathToolbarOpen] = useState<boolean>(false);
+  const inputText1Ref = useRef<HTMLTextAreaElement>(null);
+  const inputText2Ref = useRef<HTMLTextAreaElement>(null);
+  const inputTextRightRef = useRef<HTMLTextAreaElement>(null);
+  const inputVersionTextRef = useRef<HTMLTextAreaElement>(null);
+
   // Tab 1: Converter State
   const [inputText1, setInputText1] = useState<string>('');
   const [uploadedFileName1, setUploadedFileName1] = useState<string>('');
@@ -444,6 +456,91 @@ export default function App() {
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const qcFileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfRenderTaskRef = useRef<any>(null);
+
+  // PDF Canvas Interactive Crop State
+  const [isCropActive, setIsCropActive] = useState<boolean>(false);
+  const [cropBox, setCropBox] = useState<{ startX: number; startY: number; endX: number; endY: number } | null>(null);
+  const [isDraggingCrop, setIsDraggingCrop] = useState<boolean>(false);
+  const [croppedDataUrl, setCroppedDataUrl] = useState<string | null>(null);
+  const [cropActionMsg, setCropActionMsg] = useState<string>('');
+
+  const handleCropMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCropActive || !pdfCanvasRef.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    setCropBox({ startX: x, startY: y, endX: x, endY: y });
+    setIsDraggingCrop(true);
+    setCroppedDataUrl(null);
+  };
+
+  const handleCropMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCropActive || !isDraggingCrop || !cropBox) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+    const y = Math.max(0, Math.min(e.clientY - rect.top, rect.height));
+    setCropBox(prev => prev ? { ...prev, endX: x, endY: y } : null);
+  };
+
+  const handleCropMouseUp = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isCropActive || !isDraggingCrop || !cropBox || !pdfCanvasRef.current) return;
+    setIsDraggingCrop(false);
+
+    const w = Math.abs(cropBox.endX - cropBox.startX);
+    const h = Math.abs(cropBox.endY - cropBox.startY);
+    if (w < 10 || h < 10) {
+      setCropBox(null);
+      return;
+    }
+
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    const canvas = pdfCanvasRef.current;
+    const scaleX = canvas.width / containerRect.width;
+    const scaleY = canvas.height / containerRect.height;
+
+    const realX = Math.min(cropBox.startX, cropBox.endX) * scaleX;
+    const realY = Math.min(cropBox.startY, cropBox.endY) * scaleY;
+    const realW = w * scaleX;
+    const realH = h * scaleY;
+
+    try {
+      const offscreen = document.createElement('canvas');
+      offscreen.width = realW;
+      offscreen.height = realH;
+      const ctx = offscreen.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(canvas, realX, realY, realW, realH, 0, 0, realW, realH);
+        const dataUrl = offscreen.toDataURL('image/png');
+        setCroppedDataUrl(dataUrl);
+      }
+    } catch (err) {
+      console.warn("Error cropping figure from canvas:", err);
+    }
+  };
+
+  const insertCroppedImageToResult = () => {
+    if (!croppedDataUrl) return;
+    const imgHtml = `<div style="text-align: center; margin: 8px 0;"><img src="${croppedDataUrl}" alt="Question Figure" style="max-width: 100%; max-height: 250px; display: inline-block; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" /></div>`;
+    setQcResultText(prev => prev ? `${prev}\n${imgHtml}` : imgHtml);
+    setCropActionMsg('আউটপুটে চিত্রটি যোগ করা হয়েছে!');
+    setTimeout(() => setCropActionMsg(''), 2500);
+  };
+
+  const copyCroppedImageTag = () => {
+    if (!croppedDataUrl) return;
+    const imgHtml = `<img src="${croppedDataUrl}" alt="Figure" style="max-width: 100%; max-height: 250px; display: inline-block;" />`;
+    navigator.clipboard.writeText(imgHtml);
+    setCropActionMsg('HTML Tag কপি হয়েছে!');
+    setTimeout(() => setCropActionMsg(''), 2500);
+  };
+
+  const downloadCroppedImage = () => {
+    if (!croppedDataUrl) return;
+    const link = document.createElement('a');
+    link.href = croppedDataUrl;
+    link.download = `pdf_page_${pdfPageNum}_figure.png`;
+    link.click();
+  };
 
   const refreshHistoryCount = async () => {
     try {
@@ -802,82 +899,25 @@ export default function App() {
       if (!line.trim()) return <p key={lIdx} style={{ margin: 0, padding: 0, minHeight: '0.5em' }}>&nbsp;</p>;
       
       const isQuestionHeading = /^\s*(?:\d+[\.\:\)]|[\u09E6-\u09EF]+[\.\:\)])/i.test(line);
-      const isExplanationLine = /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note)[\:\-\s]/i.test(line);
-      const hasHighlightIndicator = /[*✓✔√#]/.test(line) || line.includes('mso-highlight') || line.includes('background-color') || line.includes('<mark');
-      const isCorrectOption = hasHighlightIndicator && !isQuestionHeading && !isExplanationLine;
-      
-      const renderTokens = (rawSegment: string, prefix: string) => {
-        const tokens = rawSegment.split(/(\s+)/);
-        return tokens.map((token, tIdx) => {
-          if (!token.trim()) {
-            return <span key={`${prefix}-${tIdx}`}>{token}</span>;
-          }
-          if (isEnglishWord(token, customDict)) {
-            return <span key={`${prefix}-${tIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{token}</span>;
-          } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
-            const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~]+)/);
-            return subParts.map((part, sIdx) => {
-              if (!part) return null;
-              if (isEnglishWord(part, customDict) || /^[a-zA-Z0-9\.\-_/@#\+\:\~]+$/.test(part)) {
-                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{part}</span>;
-              } else if (/[\u0980-\u09FF]/.test(part)) {
-                if (fontMode === 'SutonnyMJ') {
-                  const bijoyPart = forceBijoyInput ? part : unicodeToBijoy(part);
-                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="bijoy-text" style={{ fontFamily: "'SutonnyMJ', sans-serif", msoAsciiFontFamily: 'SutonnyMJ', msoHansiFontFamily: 'SutonnyMJ', msoBidiFontFamily: 'SutonnyMJ', msoCsFontFamily: 'SutonnyMJ' } as any}>{bijoyPart}</span>;
-                } else {
-                  const uniPart = forceBijoyInput ? bijoyToUnicode(part) : part;
-                  return <span key={`${prefix}-${tIdx}-${sIdx}`} className="ben-text" style={{ fontFamily: "'SolaimanLipi', 'Solaiman Lipi', sans-serif", msoBidiFontFamily: "'SolaimanLipi'", msoAsciiFontFamily: "'SolaimanLipi'", msoHansiFontFamily: "'SolaimanLipi'" } as any}>{uniPart}</span>;
-                }
-              } else {
-                return <span key={`${prefix}-${tIdx}-${sIdx}`} className="eng-text" style={{ fontFamily: "'Times New Roman', serif", msoAsciiFontFamily: 'Times New Roman', msoHansiFontFamily: 'Times New Roman', msoBidiFontFamily: 'Times New Roman' } as any}>{part}</span>;
-              }
-            });
-          } else {
-            if (fontMode === 'SutonnyMJ') {
-              const bijoyToken = forceBijoyInput ? token : unicodeToBijoy(token);
-              return <span key={`${prefix}-${tIdx}`} className="bijoy-text" style={{ fontFamily: "'SutonnyMJ', sans-serif", msoAsciiFontFamily: 'SutonnyMJ', msoHansiFontFamily: 'SutonnyMJ', msoBidiFontFamily: 'SutonnyMJ', msoCsFontFamily: 'SutonnyMJ' } as any}>{bijoyToken}</span>;
-            } else {
-              const uniToken = forceBijoyInput ? bijoyToUnicode(token) : token;
-              return <span key={`${prefix}-${tIdx}`} className="ben-text" style={{ fontFamily: "'SolaimanLipi', 'Solaiman Lipi', sans-serif", msoBidiFontFamily: "'SolaimanLipi'", msoAsciiFontFamily: "'SolaimanLipi'", msoHansiFontFamily: "'SolaimanLipi'" } as any}>{uniToken}</span>;
-            }
-          }
-        });
-      };
+      const isExplanationLine = /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(line) || /^[\s]*[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫]/.test(line);
+      const isOptionLine = /^\s*[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:]\s*/i.test(line);
+      const hasHighlightIndicator = (/[*✓✔√#]\s*$/.test(line) || line.includes('mso-highlight') || line.includes('background-color') || line.includes('<mark')) && !/[a-zA-Z0-9\u0980-\u09FF]\s*\*\s*[a-zA-Z0-9\u0980-\u09FF]/.test(line);
+      const isCorrectOption = isOptionLine && hasHighlightIndicator && !isQuestionHeading && !isExplanationLine;
 
-      let contentElements: React.ReactNode;
-      if (/<u\b[^>]*>[\s\S]*?<\/u>/i.test(line)) {
-        const tagParts = line.split(/(<u\b[^>]*>[\s\S]*?<\/u>)/gi);
-        contentElements = tagParts.map((part, pIdx) => {
-          const uMatch = part.match(/^<u\b[^>]*>([\s\S]*?)<\/u>$/i);
-          if (uMatch) {
-            return (
-              <u key={pIdx} className="underline" style={{ textDecoration: 'underline' }}>
-                {renderTokens(uMatch[1], `u-${pIdx}`)}
-              </u>
-            );
-          }
-          return <React.Fragment key={pIdx}>{renderTokens(part, `txt-${pIdx}`)}</React.Fragment>;
-        });
-      } else {
-        contentElements = renderTokens(line, 'raw');
-      }
+      const formattedHtml = formatHtmlTextPiece(line, fontMode, customDict);
 
       if (isCorrectOption) {
         return (
           <p key={lIdx} style={{ margin: '2px 0', padding: 0, lineHeight: 1.3 }}>
             <span style={{ backgroundColor: '#00ff00', background: '#00ff00', msoHighlight: 'lime', color: '#000000', fontWeight: 'normal', padding: '1px 6px', borderRadius: '3px' } as any}>
-              <mark style={{ backgroundColor: '#00ff00', background: '#00ff00', msoHighlight: 'lime', color: '#000000', fontWeight: 'normal' } as any}>
-                {contentElements}
-              </mark>
+              <mark style={{ backgroundColor: '#00ff00', background: '#00ff00', msoHighlight: 'lime', color: '#000000', fontWeight: 'normal' } as any} dangerouslySetInnerHTML={{ __html: formattedHtml }} />
             </span>
           </p>
         );
       }
 
       return (
-        <p key={lIdx} style={{ margin: 0, padding: 0, lineHeight: 1.2 }}>
-          {contentElements}
-        </p>
+        <p key={lIdx} style={{ margin: 0, padding: 0, lineHeight: 1.25 }} dangerouslySetInnerHTML={{ __html: formattedHtml }} />
       );
     });
   };
@@ -1044,219 +1084,73 @@ export default function App() {
       });
     }
 
-    let leadingHeaderHtml = '';
-    let bodyTablesHtml = formattedHtml;
+    let contentBodyHtml = formattedHtml;
+    let headerBlockHtml = '';
 
     if (includeCorrectionHeader) {
-      const firstTableIdx = formattedHtml.search(/<table\b/i);
-      if (firstTableIdx !== -1) {
-        leadingHeaderHtml = formattedHtml.substring(0, firstTableIdx).trim();
-        bodyTablesHtml = formattedHtml.substring(firstTableIdx);
-      } else {
-        leadingHeaderHtml = formattedHtml.trim();
-        bodyTablesHtml = '';
-      }
+      // Remove any duplicate arafat-3802 title or VAP lines from user content
+      contentBodyHtml = contentBodyHtml
+        .replace(/<p[^>]*>[\s\S]*?arafat-3802-bangla-english-fixer[\s\S]*?<\/p>/gi, '')
+        .replace(/<p[^>]*>[\s\S]*?VAP-KHA_[\s\S]*?<\/p>/gi, '');
 
-      // Remove any arafat-3802-bangla-english-fixer paragraph from leadingHeaderHtml if present
-      leadingHeaderHtml = leadingHeaderHtml.replace(/<p[^>]*>[\s\S]*?arafat-3802-bangla-english-fixer[\s\S]*?<\/p>/gi, '');
+      const defaultThreeLinesHtml = `
+        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Offline)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-A</b></span></p>
+        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Online_Live)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-B</b></span></p>
+        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 4px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Online_Practice)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-C</b></span></p>
+      `;
 
-      // Remove any existing VAP-KHA lines from leadingHeaderHtml to prevent duplication
-      leadingHeaderHtml = leadingHeaderHtml.replace(/<p[^>]*>[\s\S]*?VAP-KHA_[\s\S]*?<\/p>/gi, '');
-
-      if (leadingHeaderHtml) {
-        leadingHeaderHtml = leadingHeaderHtml.replace(/font-weight:\s*bold;?/gi, 'font-weight: normal;').replace(/<b>/gi, '').replace(/<\/b>/gi, '');
-        if (!/<p\b/i.test(leadingHeaderHtml)) {
-          leadingHeaderHtml = `<p align="left" style="text-align: left; font-weight: normal; font-size: 10pt; margin-top: 2px; margin-bottom: 4px; line-height: 1.2;">${leadingHeaderHtml}</p>`;
-        } else {
-          leadingHeaderHtml = leadingHeaderHtml.replace(/<p\b([^>]*)>/gi, (match, p1) => {
-            if (!/text-align/i.test(p1) && !/align=/i.test(p1)) {
-              return `<p align="left" style="text-align: left; font-weight: normal; margin-top: 2px; margin-bottom: 2px; line-height: 1.2;" ${p1}>`;
-            }
-            return match.replace(/text-align:\s*center/gi, 'text-align: left').replace(/align="center"/gi, 'align="left"').replace(/font-weight:\s*bold/gi, 'font-weight: normal');
-          });
-        }
-      }
-
-      formattedHtml = bodyTablesHtml;
+      headerBlockHtml = `
+        <p style="margin: 0; padding: 0; margin-bottom: 4px; font-size: 11pt; line-height: 1.15;"><span class="eng-text"><b>Correction By Name: ...........................................</b></span></p>
+        <table class="wcr-table" style="width: 100%; border-collapse: collapse; margin-bottom: 6px; font-size: 11pt; line-height: 1.15;">
+          <tr>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Syllabus Check</b></span></td>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Solution adds (At least 60%) &amp; answer check</b></span></td>
+          </tr>
+          <tr>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Proofreading, Shadow &amp; Answer Check</b></span></td>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Solution Check</b></span></td>
+          </tr>
+          <tr>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Repeat Check</b></span></td>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Parallel Ensure (Set-A+B)</b></span></td>
+          </tr>
+          <tr>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Quality Ensure</b></span></td>
+            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Correction Check</b></span></td>
+          </tr>
+        </table>
+        <p align="center" style="text-align: center; font-weight: bold; font-size: 11pt; margin-top: 4px; margin-bottom: 4px;"><span class="eng-text"><b>arafat-3802-bangla-english-fixer</b></span></p>
+        ${defaultThreeLinesHtml}
+      `;
     } else {
-      if (!formattedHtml.includes('arafat-3802-bangla-english-fixer')) {
-        formattedHtml = topHeaderTitle + formattedHtml;
+      if (!contentBodyHtml.includes('arafat-3802-bangla-english-fixer')) {
+        headerBlockHtml = topHeaderTitle;
       }
     }
 
-    const defaultThreeLinesHtml = `
-      <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>VAP-KHA_(2026)_2nd Time_(Offline)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-A</b></span></p>
-      <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>VAP-KHA_(2026)_2nd Time_(Online_Live)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-B</b></span></p>
-      <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 4px; line-height: 1.2; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>VAP-KHA_(2026)_2nd Time_(Online_Practice)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-C</b></span></p>
-    `;
-
-    const headerBlockHtml = includeCorrectionHeader ? `
-      <div style="mso-element:first-header" id="fh1">
-        <p class="MsoHeader" style="margin: 0; padding: 0; margin-bottom: 4px; font-family: 'Times New Roman', serif !important; font-size: 11pt; line-height: 1.15; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>Correction By Name: ...........................................</b></span></p>
-        <table style="width: 100%; border-collapse: collapse; border: none; margin-bottom: 6px; font-family: 'Times New Roman', serif !important; font-size: 11pt; line-height: 1.15;">
-          <tr style="border: none;">
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Syllabus Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Solution adds (At least 60%) &amp; answer check</b></span></td>
-          </tr>
-          <tr style="border: none;">
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Proofreading, Shadow &amp; Answer Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Solution Check</b></span></td>
-          </tr>
-          <tr style="border: none;">
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Repeat Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Parallel Ensure (Set-A+B)</b></span></td>
-          </tr>
-          <tr style="border: none;">
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Quality Ensure</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important;"><b>❏ Correction Check</b></span></td>
-          </tr>
-        </table>
-        <p align="center" style="text-align: center; font-weight: bold; font-size: 11pt; margin-top: 4px; margin-bottom: 4px; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>arafat-3802-bangla-english-fixer</b></span></p>
-        ${defaultThreeLinesHtml}
-        ${leadingHeaderHtml}
-      </div>
-      <div style="mso-element:header" id="h1">
-        <p class="MsoHeader">&nbsp;</p>
-      </div>
-    ` : '';
-
-    const pageStyle = includeCorrectionHeader ? `
-      @page { size: 210.0mm 297.0mm; margin: 0.5in 0.5in 0.5in 0.5in; mso-header-margin: 0.2in; mso-footer-margin: 0.2in; mso-paper-source: 0; }
-      @page Section1 { size: 210.0mm 297.0mm; margin: 0.5in 0.5in 0.5in 0.5in; mso-header-margin: 0.2in; mso-footer-margin: 0.2in; mso-header: h1; mso-first-header: fh1; mso-title-page: yes; mso-paper-source: 0; }
-      div.Section1 { page: Section1; }
-      p.MsoHeader { margin: 0; padding: 0; font-family: 'Times New Roman', serif !important; font-size: 10pt; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; }
-    ` : `
-      @page { size: 210.0mm 297.0mm; margin: 0.5in 0.5in 0.5in 0.5in; mso-header-margin: 0.2in; mso-footer-margin: 0.2in; mso-paper-source: 0; }
-      @page Section1 { size: 210.0mm 297.0mm; margin: 0.5in 0.5in 0.5in 0.5in; mso-header-margin: 0.2in; mso-footer-margin: 0.2in; mso-paper-source: 0; }
-      div.Section1 { page: Section1; }
-    `;
-
-    const htmlContent = `<!DOCTYPE html><html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'><head><meta charset='utf-8'><!--[if gte mso 9]><xml><w:WordDocument><w:View>Normal</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]--><style>@font-face { font-family: 'SolaimanLipi'; src: local('SolaimanLipi'), local('Solaiman Lipi'); } ${pageStyle} body, p, span, td, div { font-family: 'Times New Roman', '${primaryFont}', 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: '${primaryFont}'; mso-cs-font-family: '${primaryFont}'; font-size: 10pt; line-height: 1.15; text-align: left; }p { margin: 0; padding: 0; margin-bottom: 2px; line-height: 1.25; text-align: left; }table { border-collapse: collapse; border: 1px solid #000; width: 100%; margin-bottom: 10px; }tr { height: 16px; }td { border: 1px solid #000; padding: 2px 6px; vertical-align: middle; text-align: left; }.eng-text, .eng-text * { font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important; }.ben-text, .ben-text * { font-family: '${primaryFont}', 'SolaimanLipi', 'Solaiman Lipi', 'Times New Roman', sans-serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: '${primaryFont}' !important; mso-cs-font-family: '${primaryFont}' !important; }mark, span[style*="mso-highlight"], span[style*="background"] { background-color: #00ff00 !important; background: #00ff00 !important; mso-highlight: lime !important; color: #000000 !important; font-weight: normal !important; }</style></head><body><div class="Section1">${headerBlockHtml}${formattedHtml}</div></body></html>`;
+    const htmlContent = `<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>${headerBlockHtml}${contentBodyHtml}</body></html>`;
 
     let blob: Blob;
-    if (window.htmlDocx) {
-      blob = window.htmlDocx.asBlob(htmlContent, {
-        orientation: 'portrait',
-        margins: {
-          top: 720,
-          bottom: 720,
-          left: 720,
-          right: 720,
-          header: 288,
-          footer: 288,
-          gutter: 0
-        }
-      });
-
-      // Patch generated DOCX ZIP file so that <w:pgSz> in word/document.xml uses exact A4 twips, fonts use explicit complex script (w:cs) SolaimanLipi and ASCII Times New Roman, and table cells have left alignment (<w:jc w:val="left"/>)
-      try {
-        const zip = await JSZip.loadAsync(blob);
-        const targetFont = primaryFont || 'SolaimanLipi';
-
-        // 1. Patch word/document.xml
-        let docXml = await zip.file("word/document.xml")?.async("string");
-        if (docXml) {
-          docXml = docXml.replace(/<w:pgSz\b[^>]*\/>/g, '<w:pgSz w:w="11906" w:h="16838" w:orient="portrait"/>');
-
-          // Ensure all table cell paragraphs explicitly have left alignment
-          docXml = docXml.replace(/<w:tc(?:\s[^>]*)?>[\s\S]*?<\/w:tc>/gi, (tcXml) => {
-            return tcXml.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/gi, (pXml) => {
-              if (/<w:pPr(?:\s[^>]*)?>/i.test(pXml)) {
-                if (/<w:jc\b[^>]*\/>/i.test(pXml)) {
-                  return pXml.replace(/<w:jc\b[^>]*\/>/i, '<w:jc w:val="left"/>');
-                } else {
-                  return pXml.replace(/(<w:pPr(?:\s[^>]*)?>)/i, '$1<w:jc w:val="left"/>');
-                }
-              } else {
-                return pXml.replace(/(<w:p(?:\s[^>]*)?>)/i, '$1<w:pPr><w:jc w:val="left"/></w:pPr>');
-              }
-            });
-          });
-
-          docXml = docXml.replace(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/gi, (rXml) => {
-            let textContent = "";
-            rXml.replace(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/gi, (_, tText) => {
-              textContent += tText;
-              return "";
-            });
-
-            const trimmed = textContent.trim();
-            const hasBengali = /[\u0980-\u09FF]/.test(textContent);
-            const isExplicitEng = (rXml.includes('eng-text') || rXml.includes('Times New Roman')) && !rXml.includes('bijoy-text') && !rXml.includes('SutonnyMJ');
-            const hasBijoyChars = /[‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(textContent);
-            const isEnglishByDict = isEnglishWord(trimmed, customDict) && !hasBijoyChars;
-
-            let fontTag = "";
-            if (targetFont === 'SutonnyMJ') {
-              if (isExplicitEng || (isEnglishByDict && !rXml.includes('SutonnyMJ') && !rXml.includes('bijoy-text'))) {
-                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="Times New Roman"/>`;
-              } else {
-                fontTag = `<w:rFonts w:ascii="SutonnyMJ" w:hAnsi="SutonnyMJ" w:cs="SutonnyMJ" w:eastAsia="SutonnyMJ"/>`;
-              }
-            } else {
-              if (hasBengali || rXml.includes('SolaimanLipi') || rXml.includes('ben-text')) {
-                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
-              } else if (isEnglishWord(trimmed, customDict)) {
-                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman" w:eastAsia="Times New Roman"/>`;
-              } else {
-                fontTag = `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
-              }
-            }
-
-            if (/<w:rPr(?:\s[^>]*)?>/i.test(rXml)) {
-              if (/<w:rFonts\b[^>]*\/>/i.test(rXml)) {
-                return rXml.replace(/<w:rFonts\b[^>]*\/>/i, fontTag);
-              } else {
-                return rXml.replace(/(<w:rPr(?:\s[^>]*)?>)/i, `$1${fontTag}`);
-              }
-            } else {
-              return rXml.replace(/(<w:r(?:\s[^>]*)?>)/i, `$1<w:rPr>${fontTag}</w:rPr>`);
-            }
-          });
-
-          zip.file("word/document.xml", docXml);
-        }
-
-        // 2. Patch word/styles.xml
-        let stylesXml = await zip.file("word/styles.xml")?.async("string");
-        if (stylesXml) {
-          const fontTag = targetFont === 'SutonnyMJ' 
-            ? `<w:rFonts w:ascii="SutonnyMJ" w:hAnsi="SutonnyMJ" w:cs="SutonnyMJ" w:eastAsia="SutonnyMJ"/>`
-            : `<w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="SolaimanLipi" w:eastAsia="Times New Roman"/>`;
-          stylesXml = stylesXml.replace(/<w:rFonts\b[^>]*\/>/g, fontTag);
-
-          // Ensure default paragraph styles have left alignment
-          if (/<w:style\b[^>]*w:styleId="Normal"[^>]*>[\s\S]*?<\/w:style>/i.test(stylesXml)) {
-            stylesXml = stylesXml.replace(/(<w:style\b[^>]*w:styleId="Normal"[^>]*>[\s\S]*?<w:pPr>)/i, (match) => {
-              if (!match.includes('<w:jc')) {
-                return `${match}<w:jc w:val="left"/>`;
-              }
-              return match.replace(/<w:jc\b[^>]*\/>/i, '<w:jc w:val="left"/>');
-            });
+    try {
+      blob = await convertHtmlToNativeDocxBlob(htmlContent, primaryFont);
+    } catch (docxErr) {
+      console.warn("Native DOCX builder note, fallback:", docxErr);
+      if (window.htmlDocx) {
+        blob = window.htmlDocx.asBlob(htmlContent, {
+          orientation: 'portrait',
+          margins: {
+            top: 720,
+            bottom: 720,
+            left: 720,
+            right: 720,
+            header: 288,
+            footer: 288,
+            gutter: 0
           }
-
-          zip.file("word/styles.xml", stylesXml);
-        }
-
-        // 3. Patch word/fontTable.xml
-        let fontTableXml = await zip.file("word/fontTable.xml")?.async("string");
-        if (fontTableXml) {
-          if (!fontTableXml.includes("SolaimanLipi")) {
-            const fontDecl = `<w:font w:name="SolaimanLipi"><w:charset w:val="00"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font><w:font w:name="Solaiman Lipi"><w:charset w:val="00"/><w:family w:val="roman"/><w:pitch w:val="variable"/></w:font></w:fonts>`;
-            fontTableXml = fontTableXml.replace(/<\/w:fonts>/i, fontDecl);
-            zip.file("word/fontTable.xml", fontTableXml);
-          }
-        }
-
-        blob = await zip.generateAsync({
-          type: "blob",
-          mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         });
-      } catch (e) {
-        console.error("Error patching docx ZIP file:", e);
+      } else {
+        blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
       }
-    } else {
-      blob = new Blob(['\ufeff', htmlContent], { type: 'application/msword' });
     }
 
     const url = URL.createObjectURL(blob);
@@ -1933,11 +1827,12 @@ export default function App() {
   };
 
   // Processed outputs
-  const converterFormattedRaw = formatConverterTextOutput(inputText1);
-  const isBijoyInputActive = isBijoyText(inputText1);
+  const formattedInputText1 = formatMathEquations(inputText1);
+  const converterFormattedRaw = formatConverterTextOutput(formattedInputText1);
+  const isBijoyInputActive = isBijoyText(formattedInputText1);
   const unicodeInputText1 = isBijoyInputActive 
-    ? inputText1.split('\n').map(line => bijoyToUnicode(line)).join('\n')
-    : inputText1;
+    ? formattedInputText1.split('\n').map(line => bijoyToUnicode(line)).join('\n')
+    : formattedInputText1;
   const converterSolaimanTableHtml = generateFormattedTableHtml(unicodeInputText1, 'SolaimanLipi', 'Ban', customDict);
   const converterSutonnyTableHtml = generateFormattedTableHtml(unicodeInputText1, 'SutonnyMJ', 'Ban', customDict);
   
@@ -2079,6 +1974,16 @@ export default function App() {
         >
           Chat
         </button>
+        <button
+          onClick={() => setActiveTab('error-checker')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all ${
+            activeTab === 'error-checker'
+              ? 'bg-red-700 text-white border-red-700 shadow-md'
+              : 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100 font-extrabold'
+          }`}
+        >
+          Error Checker
+        </button>
       </div>
 
       {/* ================= TAB: IMPORTANT WEB ================= */}
@@ -2104,6 +2009,11 @@ export default function App() {
       {/* ================= TAB: CHAT ================= */}
       {activeTab === 'chat' && (
         <ChatTab />
+      )}
+
+      {/* ================= TAB: ERROR CHECKER ================= */}
+      {activeTab === 'error-checker' && (
+        <ErrorCheckerTab />
       )}
 
 
@@ -2299,7 +2209,9 @@ export default function App() {
           </div>
 
           <div className="border border-gray-300 rounded-xl bg-white p-3 mt-2 shadow-sm">
+            <QuickMathBar targetTextareaRef={inputText1Ref} onOpenFullToolbar={() => setIsMathToolbarOpen(true)} className="mb-2" />
             <textarea
+              ref={inputText1Ref}
               value={inputText1}
               onChange={(e) => setInputText1(e.target.value)}
               onPaste={(e) => handleTextAreaPaste(e, inputText1, setInputText1, 'inputText1')}
@@ -2465,6 +2377,7 @@ export default function App() {
 
           <div className="border border-gray-300 rounded-xl bg-white p-3 mt-2 shadow-sm">
             <textarea
+              ref={inputText2Ref}
               value={inputText2}
               onChange={(e) => setInputText2(e.target.value)}
               onPaste={(e) => handleTextAreaPaste(e, inputText2, setInputText2, 'inputText2')}
@@ -2649,6 +2562,7 @@ export default function App() {
 
           <div className="border border-gray-300 rounded-xl bg-white p-3 mt-2 shadow-sm">
             <textarea
+              ref={inputTextRightRef}
               value={inputTextRight}
               onChange={(e) => setInputTextRight(e.target.value)}
               onPaste={(e) => handleTextAreaPaste(e, inputTextRight, setInputTextRight, 'inputTextRight')}
@@ -3152,7 +3066,7 @@ export default function App() {
                   <i className="fa-solid fa-chevron-left mr-1"></i> পূর্ববর্তী পৃষ্ঠা
                 </button>
 
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap justify-center">
                   {activeBook && (
                     <span className="text-sky-300 font-bold truncate max-w-xs hidden sm:inline" title={activeBook.name}>
                       {activeBook.name}
@@ -3173,6 +3087,24 @@ export default function App() {
                     />
                     <span>/ {pdfTotalPages}</span>
                   </div>
+                  {pdfDoc && (
+                    <button
+                      onClick={() => {
+                        setIsCropActive(!isCropActive);
+                        setCropBox(null);
+                        setCroppedDataUrl(null);
+                      }}
+                      className={`px-3 py-1 rounded text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm ${
+                        isCropActive
+                          ? 'bg-amber-500 hover:bg-amber-600 text-white ring-2 ring-amber-300'
+                          : 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                      }`}
+                      title="চিত্র বা ডায়াগ্রাম সিলেক্ট ও ক্রপ করুন"
+                    >
+                      <i className="fa-solid fa-crop-simple"></i>
+                      <span>{isCropActive ? 'ক্রপ মোড সক্রিয় (বন্ধ করুন)' : '✂️ চিত্র ক্রপ করুন'}</span>
+                    </button>
+                  )}
                 </div>
 
                 <button
@@ -3187,9 +3119,80 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="p-4 flex justify-center min-h-[300px]">
+              <div className="p-4 flex flex-col items-center min-h-[300px]">
                 {pdfDoc ? (
-                  <canvas ref={pdfCanvasRef} className="max-w-full shadow-lg rounded" />
+                  <>
+                    {isCropActive && (
+                      <div className="mb-2 bg-amber-500/20 border border-amber-400 text-amber-200 text-xs font-bold px-3 py-1 rounded-md text-center flex items-center gap-1.5 animate-pulse">
+                        <i className="fa-solid fa-crosshairs"></i>
+                        <span>চিত্র বা ডায়াগ্রামের উপর মাউস চেপে ধরে ড্র্যাগ করে সিলেক্ট করুন</span>
+                      </div>
+                    )}
+                    <div 
+                      className={`relative inline-block select-none ${isCropActive ? 'cursor-crosshair' : ''}`}
+                      onMouseDown={handleCropMouseDown}
+                      onMouseMove={handleCropMouseMove}
+                      onMouseUp={handleCropMouseUp}
+                    >
+                      <canvas ref={pdfCanvasRef} className="max-w-full shadow-lg rounded block" />
+                      
+                      {isCropActive && cropBox && (
+                        <div
+                          className="absolute border-2 border-dashed border-red-500 bg-red-500/20 pointer-events-none rounded shadow-lg"
+                          style={{
+                            left: `${Math.min(cropBox.startX, cropBox.endX)}px`,
+                            top: `${Math.min(cropBox.startY, cropBox.endY)}px`,
+                            width: `${Math.abs(cropBox.endX - cropBox.startX)}px`,
+                            height: `${Math.abs(cropBox.endY - cropBox.startY)}px`,
+                          }}
+                        />
+                      )}
+                    </div>
+
+                    {croppedDataUrl && (
+                      <div className="mt-4 w-full max-w-xl bg-slate-800 border border-slate-700 rounded-lg p-3 flex flex-wrap items-center justify-between gap-3 shadow-md text-white">
+                        <div className="flex items-center gap-3">
+                          <img src={croppedDataUrl} alt="Cropped preview" className="h-16 w-auto border border-amber-400 rounded bg-white shadow-xs" />
+                          <div>
+                            <div className="text-xs font-bold text-amber-300 flex items-center gap-1">
+                              <i className="fa-solid fa-check-circle text-emerald-400"></i> চিত্র সিলেক্ট সম্পন্ন!
+                            </div>
+                            <div className="text-[11px] text-gray-300">প্রশ্নের আউটপুটে যুক্ত করতে নিচের বাটনে ক্লিক করুন:</div>
+                            {cropActionMsg && <div className="text-xs font-bold text-emerald-400 mt-1">{cropActionMsg}</div>}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            onClick={insertCroppedImageToResult}
+                            className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold px-3 py-1.5 rounded shadow flex items-center gap-1.5 transition"
+                          >
+                            <i className="fa-solid fa-plus-circle"></i> আউটপুটে চিত্র যোগ করুন
+                          </button>
+                          <button
+                            onClick={copyCroppedImageTag}
+                            className="bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold px-3 py-1.5 rounded shadow flex items-center gap-1.5 transition"
+                          >
+                            <i className="fa-solid fa-copy"></i> Tag কপি
+                          </button>
+                          <button
+                            onClick={downloadCroppedImage}
+                            className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold px-3 py-1.5 rounded shadow flex items-center gap-1.5 transition"
+                          >
+                            <i className="fa-solid fa-download"></i> PNG ডাউনলোড
+                          </button>
+                          <button
+                            onClick={() => {
+                              setCroppedDataUrl(null);
+                              setCropBox(null);
+                            }}
+                            className="bg-slate-700 hover:bg-slate-600 text-gray-300 text-xs font-bold px-2.5 py-1.5 rounded transition"
+                          >
+                            বাতিল
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <p className="text-gray-400 text-center mt-24 text-sm">
                     কোনো PDF বই সিলেক্ট করা হয়নি বা প্রিভিউ উপলব্ধ নেই।
@@ -3219,6 +3222,7 @@ export default function App() {
 
           <div className="border border-gray-300 rounded-lg p-2 bg-white mb-2">
             <textarea
+              ref={inputVersionTextRef}
               value={inputVersionText}
               onChange={(e) => {
                 const val = e.target.value;
@@ -3375,6 +3379,12 @@ export default function App() {
         isOpen={isProfileModalOpen}
         onClose={() => setIsProfileModalOpen(false)}
         onSelectTab={(tabKey) => setActiveTab(tabKey)}
+      />
+
+      {/* Floating Math Toolbar */}
+      <MathToolbar
+        isOpen={isMathToolbarOpen}
+        onOpenChange={setIsMathToolbarOpen}
       />
     </div>
   );
