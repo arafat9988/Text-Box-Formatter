@@ -1,5 +1,11 @@
 import JSZip from 'jszip';
-import { latexToOmml, fractionToOmml, radicalToOmml } from './mathOmml';
+import {
+  latexToOmml,
+  fractionToOmml,
+  radicalToOmml,
+  prepareHtmlForDocxWithMath,
+  patchDocxXmlWithOmml
+} from './mathOmml';
 
 export interface RunStyle {
   bold?: boolean;
@@ -11,11 +17,12 @@ export interface RunStyle {
 }
 
 /**
- * Escapes text for XML
+ * Escapes text for XML 1.0 safely (strips invalid control characters)
  */
 function escapeXml(str: string): string {
   if (!str) return '';
   return str
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
@@ -31,16 +38,15 @@ function hasLatexMath(str: string): boolean {
 }
 
 /**
- * Converts inline text with possible LaTeX formulas / fractions / superscripts into WordprocessingML runs & <m:oMath>
+ * Converts inline text segment into WordprocessingML runs & <m:oMath>
  */
 function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont: string): string {
   if (!text) return '';
 
   const activeFont = style.font || defaultFont || 'SolaimanLipi';
   const isSutonny = activeFont === 'SutonnyMJ';
-  const szVal = style.fontSize ? style.fontSize : 20; // default 10pt
+  const szVal = style.fontSize ? style.fontSize : 22; // default 11pt
 
-  // Build <w:rPr>
   const makeRPr = (fontName: string): string => {
     const rPrElements: string[] = [
       `<w:rFonts w:ascii="${escapeXml(fontName)}" w:hAnsi="${escapeXml(fontName)}" w:cs="${escapeXml(fontName)}" w:eastAsia="${escapeXml(fontName)}"/>`,
@@ -60,9 +66,7 @@ function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont:
     return `<w:r>${rPrXml}<w:t xml:space="preserve">${escapeXml(content)}</w:t></w:r>`;
   };
 
-  // If text does not contain any math, output font-aware runs
   if (!hasLatexMath(text)) {
-    // If Bengali mode (SolaimanLipi), split English words to use Times New Roman
     if (!isSutonny && activeFont === 'SolaimanLipi') {
       const tokens = text.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
       let res = '';
@@ -79,10 +83,7 @@ function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont:
     return makeWordRun(text);
   }
 
-  // Text has math equations! Parse equations and convert to <m:oMath>
   let resXml = '';
-
-  // Regex to detect math expressions
   const mathRegex = /(\$\$(?:[^\$]+)\$\$|\$(?:[^\$\n]+)\$|\\(?:frac|dfrac|tfrac)\s*\{[^{}]*\}\s*\{[^{}]*\}|\\(?:frac|dfrac|tfrac)\s*[0-9a-zA-Z\u09E6-\u09EF]\s*[0-9a-zA-Z\u09E6-\u09EF]|\\sqrt\s*\[[^\]]*\]\s*\{[^{}]*\}|\\sqrt\s*\{[^{}]*\}|\\sqrt\s*[0-9a-zA-Z\u09E6-\u09EF]|[√\u221A]\s*\{[^{}]*\}|[√\u221A]\s*\([^\)]*\)|[√\u221A][0-9a-zA-Z\u09E6-\u09EF]+|___FRAC___[\s\S]*?___SEP___[\s\S]*?___END___|[a-zA-Z0-9\u09E6-\u09EF][\^_]\{[^{}]*\}|[a-zA-Z0-9\u09E6-\u09EF][\^_][0-9a-zA-Z\u09E6-\u09EF])/g;
 
   let lastIdx = 0;
@@ -149,144 +150,196 @@ function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont:
 }
 
 /**
- * Traverses DOM node tree and converts it into WordprocessingML (<w:p>, <w:r>, <w:tbl>, <m:oMath>)
+ * Normalizes container children into strict top-level OpenXML block elements (<w:p> or <w:tbl>).
+ * Guarantees NO nested <w:p> inside another <w:p> and NO loose runs inside <w:tc> or <w:body>.
  */
-function domNodeToWordXml(node: Node, currentStyle: RunStyle, defaultFont: string): string {
-  if (node.nodeType === Node.TEXT_NODE) {
-    const text = node.textContent || '';
-    if (!text) return '';
-    return convertTextSegmentToWordXml(text, currentStyle, defaultFont);
-  }
+function normalizeContainerToBlocks(containerNode: Node, currentStyle: RunStyle, defaultFont: string): string[] {
+  const blocks: string[] = [];
+  let inlineRunBuffer = '';
 
-  if (node.nodeType !== Node.ELEMENT_NODE) return '';
-
-  const el = node as HTMLElement;
-  const tagName = el.tagName.toLowerCase();
-
-  // 1. Math fraction custom elements or classes
-  if (tagName === 'math-fraction' || el.classList.contains('math-frac') || el.classList.contains('math-fraction')) {
-    const numAttr = el.getAttribute('data-num');
-    const denAttr = el.getAttribute('data-den');
-    if (numAttr !== null && denAttr !== null) {
-      return fractionToOmml(numAttr, denAttr);
+  const flushInlineBuffer = () => {
+    if (inlineRunBuffer.trim()) {
+      blocks.push(`<w:p><w:pPr><w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>${inlineRunBuffer}</w:p>`);
     }
-    const numEl = el.querySelector('.math-frac-num, .num');
-    const denEl = el.querySelector('.math-frac-den, .den');
-    if (numEl && denEl) {
-      return fractionToOmml(numEl.textContent?.trim() || '', denEl.textContent?.trim() || '');
+    inlineRunBuffer = '';
+  };
+
+  const traverse = (node: Node, style: RunStyle) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent || '';
+      if (text) {
+        inlineRunBuffer += convertTextSegmentToWordXml(text, style, defaultFont);
+      }
+      return;
     }
-  }
 
-  // 2. Table handling
-  if (tagName === 'table') {
-    let rowsXml = '';
-    const trNodes = el.querySelectorAll(':scope > tr, :scope > tbody > tr, :scope > thead > tr');
-    const totalTableWidth = 10400; // twips (A4 printable width with 0.5in margins)
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
 
-    trNodes.forEach(tr => {
-      let cellsXml = '';
-      const tdNodes = tr.querySelectorAll(':scope > td, :scope > th');
-      const cellCount = tdNodes.length || 1;
-      const defaultCellWidth = Math.floor(totalTableWidth / cellCount);
+    const el = node as HTMLElement;
+    const tagName = el.tagName.toLowerCase();
 
-      tdNodes.forEach(td => {
-        const tdEl = td as HTMLElement;
-        let cellW = defaultCellWidth;
-        const styleW = tdEl.style.width;
-        if (styleW.includes('%')) {
-          const pct = parseFloat(styleW) / 100;
-          if (!isNaN(pct)) cellW = Math.floor(totalTableWidth * pct);
-        }
+    // 1. Math fraction elements
+    if (tagName === 'math-fraction' || el.classList.contains('math-frac') || el.classList.contains('math-fraction')) {
+      const numAttr = el.getAttribute('data-num');
+      const denAttr = el.getAttribute('data-den');
+      if (numAttr !== null && denAttr !== null) {
+        inlineRunBuffer += fractionToOmml(numAttr, denAttr);
+        return;
+      }
+      const numEl = el.querySelector('.math-frac-num, .num');
+      const denEl = el.querySelector('.math-frac-den, .den');
+      if (numEl && denEl) {
+        inlineRunBuffer += fractionToOmml(numEl.textContent?.trim() || '', denEl.textContent?.trim() || '');
+        return;
+      }
+    }
 
-        // Check cell content
-        let cellContentXml = '';
-        for (let i = 0; i < td.childNodes.length; i++) {
-          cellContentXml += domNodeToWordXml(td.childNodes[i], currentStyle, defaultFont);
-        }
-        if (!cellContentXml.trim()) {
-          cellContentXml = '<w:p/>';
-        } else if (!cellContentXml.startsWith('<w:p')) {
-          cellContentXml = `<w:p><w:pPr><w:spacing w:after="20" w:line="240" w:lineRule="auto"/></w:pPr>${cellContentXml}</w:p>`;
-        }
+    // 2. Table element -> flush current inline buffer and insert <w:tbl> block
+    if (tagName === 'table') {
+      flushInlineBuffer();
 
-        cellsXml += `<w:tc><w:tcPr><w:tcW w:w="${cellW}" w:type="dxa"/></w:tcPr>${cellContentXml}</w:tc>`;
+      let rowsXml = '';
+      const trNodes = el.querySelectorAll(':scope > tr, :scope > tbody > tr, :scope > thead > tr');
+      const totalTableWidth = 10400; // twips (A4 printable area)
+
+      trNodes.forEach(tr => {
+        let cellsXml = '';
+        const tdNodes = tr.querySelectorAll(':scope > td, :scope > th');
+        const cellCount = tdNodes.length || 1;
+        const defaultCellWidth = Math.floor(totalTableWidth / cellCount);
+
+        tdNodes.forEach(td => {
+          const tdEl = td as HTMLElement;
+          let cellW = defaultCellWidth;
+          const styleW = tdEl.style.width;
+          if (styleW.includes('%')) {
+            const pct = parseFloat(styleW) / 100;
+            if (!isNaN(pct)) cellW = Math.floor(totalTableWidth * pct);
+          }
+
+          // Cells MUST contain block elements only
+          const cellBlocks = normalizeContainerToBlocks(td, style, defaultFont);
+          let cellContentXml = cellBlocks.join('');
+          if (!cellContentXml.trim()) {
+            cellContentXml = '<w:p/>';
+          }
+
+          cellsXml += `<w:tc><w:tcPr><w:tcW w:w="${cellW}" w:type="dxa"/></w:tcPr>${cellContentXml}</w:tc>`;
+        });
+
+        rowsXml += `<w:tr><w:trPr><w:cantSplit/></w:trPr>${cellsXml}</w:tr>`;
       });
 
-      rowsXml += `<w:tr><w:trPr><w:cantSplit/></w:trPr>${cellsXml}</w:tr>`;
-    });
+      const isBordered =
+        el.classList.contains('qc-table') ||
+        el.classList.contains('wcr-table') ||
+        el.style.border.includes('solid') ||
+        el.getAttribute('border') === '1';
 
-    const isBordered =
-      el.classList.contains('qc-table') ||
-      el.classList.contains('wcr-table') ||
-      el.style.border.includes('solid') ||
-      el.getAttribute('border') === '1';
+      const borderXml = isBordered
+        ? '<w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders>'
+        : '<w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders>';
 
-    const borderXml = isBordered
-      ? '<w:tblBorders><w:top w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:left w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:bottom w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:right w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="000000"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="000000"/></w:tblBorders>'
-      : '<w:tblBorders><w:top w:val="none"/><w:left w:val="none"/><w:bottom w:val="none"/><w:right w:val="none"/><w:insideH w:val="none"/><w:insideV w:val="none"/></w:tblBorders>';
-
-    return `<w:tbl><w:tblPr><w:tblW w:w="${totalTableWidth}" w:type="dxa"/>${borderXml}</w:tblPr>${rowsXml}</w:tbl>`;
-  }
-
-  // 3. Paragraph & Heading handling
-  if (tagName === 'p' || tagName === 'div' || tagName === 'h1' || tagName === 'h2' || tagName === 'h3') {
-    let pInner = '';
-    const nextStyle: RunStyle = { ...currentStyle };
-
-    if (tagName === 'h1') {
-      nextStyle.bold = true;
-      nextStyle.fontSize = 28; // 14pt
-    } else if (tagName === 'h2') {
-      nextStyle.bold = true;
-      nextStyle.fontSize = 24; // 12pt
-    } else if (tagName === 'h3') {
-      nextStyle.bold = true;
-      nextStyle.fontSize = 22; // 11pt
+      blocks.push(`<w:tbl><w:tblPr><w:tblW w:w="${totalTableWidth}" w:type="dxa"/>${borderXml}</w:tblPr>${rowsXml}</w:tbl>`);
+      return;
     }
 
+    // 3. Paragraph & Heading block elements
+    if (tagName === 'p' || tagName === 'div' || tagName === 'h1' || tagName === 'h2' || tagName === 'h3') {
+      flushInlineBuffer();
+
+      const nextStyle: RunStyle = { ...style };
+      if (tagName === 'h1') {
+        nextStyle.bold = true;
+        nextStyle.fontSize = 28;
+      } else if (tagName === 'h2') {
+        nextStyle.bold = true;
+        nextStyle.fontSize = 24;
+      } else if (tagName === 'h3') {
+        nextStyle.bold = true;
+        nextStyle.fontSize = 22;
+      }
+
+      // Check alignment
+      const alignAttr = el.getAttribute('align')?.toLowerCase();
+      const styleAlign = el.style.textAlign?.toLowerCase();
+      let jcXml = '';
+      if (alignAttr === 'center' || styleAlign === 'center') {
+        jcXml = '<w:jc w:val="center"/>';
+      } else if (alignAttr === 'right' || styleAlign === 'right') {
+        jcXml = '<w:jc w:val="right"/>';
+      } else if (alignAttr === 'justify' || styleAlign === 'justify') {
+        jcXml = '<w:jc w:val="both"/>';
+      }
+
+      // Check if this paragraph/div contains child tables or sub-paragraphs
+      let hasChildBlocks = false;
+      for (let i = 0; i < el.childNodes.length; i++) {
+        const cTag = el.childNodes[i].nodeType === Node.ELEMENT_NODE ? (el.childNodes[i] as HTMLElement).tagName.toLowerCase() : '';
+        if (cTag === 'table' || cTag === 'p' || cTag === 'div' || cTag === 'h1' || cTag === 'h2' || cTag === 'h3') {
+          hasChildBlocks = true;
+          break;
+        }
+      }
+
+      if (hasChildBlocks) {
+        const childBlocks = normalizeContainerToBlocks(el, nextStyle, defaultFont);
+        childBlocks.forEach(b => blocks.push(b));
+      } else {
+        let innerRuns = '';
+        for (let i = 0; i < el.childNodes.length; i++) {
+          const cNode = el.childNodes[i];
+          if (cNode.nodeType === Node.TEXT_NODE) {
+            innerRuns += convertTextSegmentToWordXml(cNode.textContent || '', nextStyle, defaultFont);
+          } else if (cNode.nodeType === Node.ELEMENT_NODE) {
+            const cEl = cNode as HTMLElement;
+            const cTag = cEl.tagName.toLowerCase();
+            if (cTag === 'br') {
+              innerRuns += '<w:r><w:br/></w:r>';
+            } else {
+              const spanStyle = getNextStyleForElement(cEl, nextStyle, defaultFont);
+              innerRuns += convertTextSegmentToWordXml(cEl.textContent || '', spanStyle, defaultFont);
+            }
+          }
+        }
+        if (innerRuns.trim()) {
+          blocks.push(`<w:p><w:pPr>${jcXml}<w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>${innerRuns}</w:p>`);
+        } else {
+          blocks.push('<w:p/>');
+        }
+      }
+      return;
+    }
+
+    // 4. Line break
+    if (tagName === 'br') {
+      inlineRunBuffer += '<w:r><w:br/></w:r>';
+      return;
+    }
+
+    // 5. Inlines (span, b, i, u, mark, font)
+    const nextStyle = getNextStyleForElement(el, style, defaultFont);
     for (let i = 0; i < el.childNodes.length; i++) {
-      pInner += domNodeToWordXml(el.childNodes[i], nextStyle, defaultFont);
+      traverse(el.childNodes[i], nextStyle);
     }
-    if (!pInner.trim()) {
-      return '<w:p/>';
-    }
-    // If pInner already contains block tables or paragraphs, return as is
-    if (pInner.startsWith('<w:tbl') || pInner.startsWith('<w:p')) {
-      return pInner;
-    }
+  };
 
-    // Determine alignment
-    const alignAttr = el.getAttribute('align')?.toLowerCase();
-    const styleAlign = el.style.textAlign?.toLowerCase();
-    let jcXml = '';
-    if (alignAttr === 'center' || styleAlign === 'center') {
-      jcXml = '<w:jc w:val="center"/>';
-    } else if (alignAttr === 'right' || styleAlign === 'right') {
-      jcXml = '<w:jc w:val="right"/>';
-    } else if (alignAttr === 'justify' || styleAlign === 'justify') {
-      jcXml = '<w:jc w:val="both"/>';
-    }
-
-    return `<w:p><w:pPr>${jcXml}<w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>${pInner}</w:p>`;
+  for (let i = 0; i < containerNode.childNodes.length; i++) {
+    traverse(containerNode.childNodes[i], currentStyle);
   }
 
-  // 4. Line break
-  if (tagName === 'br') {
-    return '<w:r><w:br/></w:r>';
-  }
+  flushInlineBuffer();
+  return blocks;
+}
 
-  // 5. Inlines & Spans with styles
-  const nextStyle: RunStyle = { ...currentStyle };
+function getNextStyleForElement(el: HTMLElement, style: RunStyle, defaultFont: string): RunStyle {
+  const tagName = el.tagName.toLowerCase();
+  const nextStyle: RunStyle = { ...style };
 
-  if (tagName === 'b' || tagName === 'strong') {
-    nextStyle.bold = true;
-  }
-  if (tagName === 'i' || tagName === 'em') {
-    nextStyle.italic = true;
-  }
-  if (tagName === 'u') {
-    nextStyle.underline = true;
-  }
+  if (tagName === 'b' || tagName === 'strong') nextStyle.bold = true;
+  if (tagName === 'i' || tagName === 'em') nextStyle.italic = true;
+  if (tagName === 'u') nextStyle.underline = true;
+
   if (
     tagName === 'mark' ||
     el.style.backgroundColor?.includes('rgb(0, 255, 0)') ||
@@ -316,41 +369,27 @@ function domNodeToWordXml(node: Node, currentStyle: RunStyle, defaultFont: strin
     nextStyle.fontSize = 24;
   }
 
-  let childrenXml = '';
-  for (let i = 0; i < el.childNodes.length; i++) {
-    childrenXml += domNodeToWordXml(el.childNodes[i], nextStyle, defaultFont);
-  }
-  return childrenXml;
+  return nextStyle;
 }
 
 /**
- * Converts an entire HTML document string into a standard, 100% valid Microsoft Word .docx Blob
- * with native Word Equations (<m:oMath>), tables (<w:tbl>), paragraphs (<w:p>), and exact fonts.
+ * Fallback OpenXML generator that builds a clean, non-corrupted DOCX zip manually
  */
-export async function convertHtmlToNativeDocxBlob(
+async function generateNativeOpenXmlBlobFallback(
   htmlContent: string,
-  primaryFont: string = 'SolaimanLipi'
+  primaryFont: string,
+  ommlMap: Map<string, string>
 ): Promise<Blob> {
   const parser = new DOMParser();
   const doc = parser.parseFromString(htmlContent, 'text/html');
 
-  const bodyEl = doc.body;
-  let bodyXml = '';
-
-  for (let i = 0; i < bodyEl.childNodes.length; i++) {
-    const nodeXml = domNodeToWordXml(bodyEl.childNodes[i], {}, primaryFont);
-    if (nodeXml) {
-      bodyXml += nodeXml;
-    }
+  const blocks = normalizeContainerToBlocks(doc.body, {}, primaryFont);
+  let bodyXml = blocks.join('');
+  if (!bodyXml.trim()) {
+    bodyXml = '<w:p/>';
   }
 
-  // Ensure all loose runs are wrapped in <w:p>
-  if (bodyXml && !bodyXml.startsWith('<w:p') && !bodyXml.startsWith('<w:tbl')) {
-    bodyXml = `<w:p><w:pPr><w:spacing w:after="30" w:line="240" w:lineRule="auto"/></w:pPr>${bodyXml}</w:p>`;
-  }
-
-  // Build the complete word/document.xml
-  const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+  let documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"
             xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"
             xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
@@ -364,6 +403,10 @@ export async function convertHtmlToNativeDocxBlob(
   </w:body>
 </w:document>`;
 
+  if (ommlMap.size > 0) {
+    documentXml = patchDocxXmlWithOmml(documentXml, ommlMap);
+  }
+
   const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -376,13 +419,117 @@ export async function convertHtmlToNativeDocxBlob(
   <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
 </Relationships>`;
 
+  const docRelsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+</Relationships>`;
+
   const zip = new JSZip();
   zip.file('[Content_Types].xml', contentTypesXml);
   zip.file('_rels/.rels', relsXml);
+  zip.file('word/_rels/document.xml.rels', docRelsXml);
   zip.file('word/document.xml', documentXml);
 
   return await zip.generateAsync({
     type: 'blob',
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   });
+}
+
+/**
+ * Primary DOCX Blob generator:
+ * 1. Uses html-docx-js (window.htmlDocx) to convert HTML to compliant .docx
+ * 2. Patches word/document.xml with native OMML Math equations (<m:oMath>)
+ * 3. Falls back to strict block-level OpenXML generator if htmlDocx is missing
+ */
+export async function convertHtmlToNativeDocxBlob(
+  htmlContent: string,
+  primaryFont: string = 'SolaimanLipi'
+): Promise<Blob> {
+  const { htmlWithPlaceholders, ommlMap } = prepareHtmlForDocxWithMath(htmlContent);
+
+  const fullHtml = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    @page {
+      size: A4 portrait;
+      margin: 0.5in;
+    }
+    body {
+      font-family: '${primaryFont}', 'SolaimanLipi', 'SutonnyMJ', 'Times New Roman', serif;
+      font-size: 11pt;
+      line-height: 1.15;
+      color: #000000;
+    }
+    p {
+      margin: 0 0 4px 0;
+      padding: 0;
+      line-height: 1.2;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 6px;
+    }
+    td, th {
+      vertical-align: top;
+      padding: 3px 5px;
+    }
+    table.bordered td, table.bordered th, table.wcr-table td, table.wcr-table th, table.qc-table td, table.qc-table th {
+      border: 1px solid #000000;
+    }
+    .eng-text, .eng {
+      font-family: 'Times New Roman', serif !important;
+    }
+    mark, .highlight-lime {
+      background-color: #00ff00 !important;
+      mso-highlight: lime !important;
+    }
+  </style>
+</head>
+<body>
+${htmlWithPlaceholders}
+</body>
+</html>`;
+
+  let docxBlob: Blob | null = null;
+
+  if (typeof window !== 'undefined' && (window as any).htmlDocx) {
+    try {
+      const rawBlob = (window as any).htmlDocx.asBlob(fullHtml, {
+        orientation: 'portrait',
+        margins: { top: 720, bottom: 720, left: 720, right: 720, header: 288, footer: 288, gutter: 0 }
+      });
+      if (rawBlob && rawBlob.size > 0) {
+        docxBlob = rawBlob;
+      }
+    } catch (e) {
+      console.warn('htmlDocx.asBlob note, falling back to native OpenXML builder:', e);
+    }
+  }
+
+  if (docxBlob) {
+    try {
+      if (ommlMap.size > 0) {
+        const zip = await JSZip.loadAsync(docxBlob);
+        const docXmlFile = zip.file('word/document.xml');
+        if (docXmlFile) {
+          let docXml = await docXmlFile.async('string');
+          docXml = patchDocxXmlWithOmml(docXml, ommlMap);
+          zip.file('word/document.xml', docXml);
+          return await zip.generateAsync({
+            type: 'blob',
+            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+          });
+        }
+      }
+      return docxBlob;
+    } catch (e) {
+      console.warn('Failed patching OMML on htmlDocx blob:', e);
+      return docxBlob;
+    }
+  }
+
+  return generateNativeOpenXmlBlobFallback(htmlContent, primaryFont, ommlMap);
 }
