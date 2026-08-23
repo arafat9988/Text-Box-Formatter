@@ -181,7 +181,7 @@ export function WcrTab({ customDict = '' }: WcrTabProps) {
         if (window.htmlDocx) {
           blob = window.htmlDocx.asBlob(htmlContent, {
             orientation: 'portrait',
-            margins: { top: 720, bottom: 720, left: 720, right: 720 }
+            margins: { top: 720, bottom: 720, left: 720, right: 720, header: 288, footer: 288, gutter: 0 }
           });
         } else {
           blob = new Blob([htmlContent], { type: 'application/msword' });

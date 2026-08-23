@@ -163,14 +163,183 @@ function processDocxXmlContentToUnicode(xmlContent: string): string {
 // Model Cooldown Manager to prevent repeating rate-limited / quota-exhausted models
 const modelCooldowns: Record<string, number> = {};
 
-function getActiveCandidateModels(models: string[]): string[] {
+// Official and valid Gemini models for text & multimodal tasks
+const DEFAULT_GEMINI_CANDIDATE_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-2.5-pro",
+  "gemini-2.0-flash-lite",
+  "gemini-3.7-flash",
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
+];
+
+function getActiveCandidateModels(models: string[] = DEFAULT_GEMINI_CANDIDATE_MODELS): string[] {
   const now = Date.now();
   const active = models.filter((m) => !modelCooldowns[m] || modelCooldowns[m] <= now);
   return active.length > 0 ? active : models;
 }
 
-function markModelCooldown(modelName: string, durationMs = 60000) {
+function markModelCooldown(modelName: string, durationMs = 15000) {
   modelCooldowns[modelName] = Date.now() + durationMs;
+}
+
+function isTransientOrUnavailableError(err: any): boolean {
+  if (!err) return false;
+  const msg = (err.message || String(err)).toLowerCase();
+  const status = String(err.status || "").toLowerCase();
+  const code = String(err.code || err.statusCode || "");
+
+  return (
+    code === "503" ||
+    code === "429" ||
+    code === "500" ||
+    code === "502" ||
+    code === "504" ||
+    code === "404" ||
+    status === "unavailable" ||
+    status === "resource_exhausted" ||
+    status === "internal" ||
+    msg.includes("503") ||
+    msg.includes("unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("spikes in demand") ||
+    msg.includes("deadline expired") ||
+    msg.includes("429") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("quota") ||
+    msg.includes("rate limit") ||
+    msg.includes("overloaded") ||
+    msg.includes("404") ||
+    msg.includes("not_found") ||
+    msg.includes("temporarily unavailable") ||
+    msg.includes("fetch failed") ||
+    msg.includes("econnreset") ||
+    msg.includes("etimedout")
+  );
+}
+
+function formatGeminiErrorMessage(error: any, defaultMsg: string): string {
+  if (!error) return defaultMsg;
+  const msg = (error.message || String(error)).toLowerCase();
+  const status = String(error.status || "").toLowerCase();
+  const code = String(error.code || error.statusCode || "");
+
+  if (
+    code === "503" ||
+    status === "unavailable" ||
+    msg.includes("503") ||
+    msg.includes("unavailable") ||
+    msg.includes("high demand") ||
+    msg.includes("spikes in demand") ||
+    msg.includes("deadline expired")
+  ) {
+    return "Gemini মডেলটি বর্তমানে সাময়িকভাবে উচ্চ চাহিদায় রয়েছে (High Demand / 503)। সিস্টেম স্বয়ংক্রিয়ভাবে বিকল্প মডেলে চেষ্টা করছে...";
+  }
+
+  if (
+    code === "429" ||
+    status === "resource_exhausted" ||
+    msg.includes("429") ||
+    msg.includes("resource_exhausted") ||
+    msg.includes("quota") ||
+    msg.includes("rate limit")
+  ) {
+    return "Gemini API কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। সিস্টেম বিকল্প মডেলে চেষ্টা করছে বা কিছুক্ষণ পর আবার অনুরোধ করুন।";
+  }
+
+  return error.message || defaultMsg;
+}
+
+interface GeminiCallParams {
+  ai: GoogleGenAI;
+  candidateModels?: string[];
+  contents: any;
+  config?: any;
+  label?: string;
+}
+
+async function callGeminiWithFallback({
+  ai,
+  candidateModels = DEFAULT_GEMINI_CANDIDATE_MODELS,
+  contents,
+  config,
+  label = "Gemini Call",
+}: GeminiCallParams): Promise<string> {
+  const activeModels = getActiveCandidateModels(candidateModels);
+  let lastErr: any = null;
+
+  // Pass 1: Try all active models
+  for (const modelName of activeModels) {
+    try {
+      const response = await ai.models.generateContent({
+        model: modelName,
+        contents,
+        ...(config ? { config } : {}),
+      });
+      const text = response.text || "";
+      if (text && text.trim()) {
+        return text.trim();
+      }
+    } catch (err: any) {
+      lastErr = err;
+      const errMsg = err?.message || String(err);
+      console.warn(`[${label}] Model ${modelName} failed:`, errMsg);
+
+      const errMsgLower = errMsg.toLowerCase();
+      const is404 = errMsgLower.includes("404") || errMsgLower.includes("not_found") || err?.code === "404";
+      const is429 = errMsgLower.includes("429") || errMsgLower.includes("quota") || err?.status === "RESOURCE_EXHAUSTED";
+
+      // Parse retry-after from error details if present (e.g. "retry in 2.4s")
+      let retryDelayMs = 4000;
+      const retryMatch = errMsg.match(/retry in ([\d\.]+)s/i);
+      if (retryMatch) {
+        retryDelayMs = Math.ceil(parseFloat(retryMatch[1]) * 1000) + 500;
+      }
+
+      if (is404) {
+        markModelCooldown(modelName, 24 * 3600 * 1000); // 24h cooldown for invalid model names
+      } else if (is429) {
+        markModelCooldown(modelName, Math.max(retryDelayMs, 300000)); // 5m cooldown for quota/rate limits
+      } else {
+        markModelCooldown(modelName, 10000); // 10s cooldown for high demand / 503
+      }
+      console.log(`[${label} Model Fallback] Switching from ${modelName} to next candidate model.`);
+      continue;
+    }
+  }
+
+  // Pass 2: Retry with backoff if all models encountered transient limit
+  const retryCandidates = candidateModels.filter((m) => {
+    return !modelCooldowns[m] || modelCooldowns[m] < Date.now() + 12 * 3600 * 1000;
+  });
+
+  for (let retryPass = 1; retryPass <= 3; retryPass++) {
+    // Dynamic backoff delay between retry passes (2s, 4s, 6s)
+    await new Promise((r) => setTimeout(r, 2000 * retryPass));
+    for (const modelName of retryCandidates) {
+      try {
+        const response = await ai.models.generateContent({
+          model: modelName,
+          contents,
+          ...(config ? { config } : {}),
+        });
+        const text = response.text || "";
+        if (text && text.trim()) {
+          return text.trim();
+        }
+      } catch (err: any) {
+        lastErr = err;
+        console.warn(`[${label} Retry-Pass ${retryPass}] Model ${modelName} failed:`, err?.message || err);
+      }
+    }
+  }
+
+  if (lastErr) {
+    throw lastErr;
+  }
+  return "";
 }
 
 async function startServer() {
@@ -340,66 +509,26 @@ INSTRUCTIONS:
    - Preserve equation step symbols like ⇒, ∴, =, :, এবং, শর্তমতে:, সমাধান:.
 8. Output ONLY the raw transcribed text. Do not add any conversational introductions, conclusions, or markdown code blocks.`;
 
-      const candidateModels = [
-        "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ];
-      let transcribedText = "";
-      let lastErr: any = null;
-
-      const activeModels = getActiveCandidateModels(candidateModels);
-
-      for (const modelName of activeModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            const response = await ai.models.generateContent({
-              model: modelName,
-              contents: {
-                parts: [
-                  { text: prompt },
-                  {
-                    inlineData: {
-                      data: imageBase64,
-                      mimeType: mimeType || "image/png",
-                    },
-                  },
-                ],
+      const transcribedText = await callGeminiWithFallback({
+        ai,
+        contents: {
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                data: imageBase64,
+                mimeType: mimeType || "image/png",
               },
-            });
-            transcribedText = response.text || "";
-            if (transcribedText.trim()) break;
-          } catch (mErr: any) {
-            const errMsg = mErr?.message || String(mErr);
-            lastErr = mErr;
-            if (
-              errMsg.includes("404") ||
-              errMsg.includes("NOT_FOUND") ||
-              errMsg.includes("429") ||
-              errMsg.includes("RESOURCE_EXHAUSTED") ||
-              errMsg.includes("quota")
-            ) {
-              markModelCooldown(modelName, 60000);
-              console.log(`[OCR Model Fallback] ${modelName} limit/quota reached. Cooling down 60s, switching model.`);
-              break; // Don't retry same model if quota exhausted or not found; try next model immediately
-            }
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-        if (transcribedText.trim()) break;
-      }
+            },
+          ],
+        },
+        label: "OCR",
+      });
 
-      if (!transcribedText.trim() && lastErr) {
-        throw lastErr;
-      }
-
-      res.json({ text: transcribedText.trim() });
+      res.json({ text: transcribedText });
     } catch (error: any) {
       console.error("OCR error:", error);
-      let message = error.message || "Failed to extract text using Gemini API.";
-      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        message = "Gemini API ফ্রি কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে ১ মিনিট অপেক্ষা করে আবার চেষ্টা করুন।";
-      }
+      const message = formatGeminiErrorMessage(error, "Failed to extract text using Gemini API.");
       res.status(500).json({ error: message });
     }
   });
@@ -442,56 +571,16 @@ CRITICAL MANDATORY INSTRUCTIONS:
 Bengali Input Text to Translate:
 ${text}`;
 
-      const candidateModels = [
-        "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ];
-      let translatedText = "";
-      let lastErr: any = null;
+      const translatedText = await callGeminiWithFallback({
+        ai,
+        contents: prompt,
+        label: "Translate",
+      });
 
-      const activeModels = getActiveCandidateModels(candidateModels);
-
-      for (const modelName of activeModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            const response = await ai.models.generateContent({
-              model: modelName,
-              contents: prompt,
-            });
-            translatedText = response.text || "";
-            if (translatedText.trim()) break;
-          } catch (mErr: any) {
-            const errMsg = mErr?.message || String(mErr);
-            lastErr = mErr;
-            if (
-              errMsg.includes("404") ||
-              errMsg.includes("NOT_FOUND") ||
-              errMsg.includes("429") ||
-              errMsg.includes("RESOURCE_EXHAUSTED") ||
-              errMsg.includes("quota")
-            ) {
-              markModelCooldown(modelName, 60000);
-              console.log(`[Translate Model Fallback] ${modelName} limit/quota reached. Cooling down 60s, switching model.`);
-              break;
-            }
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-        if (translatedText.trim()) break;
-      }
-
-      if (!translatedText.trim() && lastErr) {
-        throw lastErr;
-      }
-
-      res.json({ translation: translatedText.trim() });
+      res.json({ translation: translatedText });
     } catch (error: any) {
       console.error("Translation error:", error);
-      let message = error.message || "Failed to translate using Gemini API.";
-      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        message = "Gemini API ফ্রি কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে ১ মিনিট অপেক্ষা করে আবার চেষ্টা করুন।";
-      }
+      const message = formatGeminiErrorMessage(error, "Failed to translate using Gemini API.");
       res.status(500).json({
         error: message,
       });
@@ -689,52 +778,15 @@ ${text}`;
         }
       ];
 
-      const candidateModels = [
-        "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ];
-      let correctedText = "";
-      let lastErr: any = null;
-
-      const activeModels = getActiveCandidateModels(candidateModels);
-
-      for (const modelName of activeModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            const response = await ai.models.generateContent({
-              model: modelName,
-              contents: promptParts,
-              config: {
-                systemInstruction,
-                temperature: 0.2,
-              }
-            });
-            correctedText = response.text || "";
-            if (correctedText.trim()) break;
-          } catch (mErr: any) {
-            const errMsg = mErr?.message || String(mErr);
-            lastErr = mErr;
-            if (
-              errMsg.includes("404") ||
-              errMsg.includes("NOT_FOUND") ||
-              errMsg.includes("429") ||
-              errMsg.includes("RESOURCE_EXHAUSTED") ||
-              errMsg.includes("quota")
-            ) {
-              markModelCooldown(modelName, 60000);
-              console.log(`[WCR Model Fallback] ${modelName} limit/quota reached. Cooling down 60s, switching model.`);
-              break;
-            }
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-        if (correctedText.trim()) break;
-      }
-
-      if (!correctedText.trim() && lastErr) {
-        throw lastErr;
-      }
+      const correctedText = await callGeminiWithFallback({
+        ai,
+        contents: promptParts,
+        config: {
+          systemInstruction,
+          temperature: 0.2,
+        },
+        label: "WCR",
+      });
 
       const finalCorrectedText = correctedText.trim();
 
@@ -746,10 +798,7 @@ ${text}`;
       });
     } catch (error: any) {
       console.error("WCR Correction Error:", error);
-      let message = error.message || "WCR প্রসেস ব্যর্থ হয়েছে।";
-      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        message = "Gemini API ফ্রি কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে ১ মিনিট অপেক্ষা করে আবার চেষ্টা করুন।";
-      }
+      const message = formatGeminiErrorMessage(error, "WCR প্রসেস ব্যর্থ হয়েছে।");
       res.status(500).json({ error: message });
     }
   });
@@ -933,60 +982,20 @@ ${text}`;
         }];
       }
 
-      const candidateModels = [
-        "gemini-3.1-flash-lite",
-        "gemini-flash-latest",
-        "gemini-3.6-flash",
-      ];
-      let replyText = "";
-      let lastErr: any = null;
-
-      const activeModels = getActiveCandidateModels(candidateModels);
-
-      for (const modelName of activeModels) {
-        for (let attempt = 0; attempt < 2; attempt++) {
-          try {
-            const response = await ai.models.generateContent({
-              model: modelName,
-              contents: contentsList,
-              config: {
-                systemInstruction,
-                temperature: 0.7,
-              }
-            });
-            replyText = response.text || "";
-            if (replyText.trim()) break;
-          } catch (mErr: any) {
-            const errMsg = mErr?.message || String(mErr);
-            lastErr = mErr;
-            if (
-              errMsg.includes("404") ||
-              errMsg.includes("NOT_FOUND") ||
-              errMsg.includes("429") ||
-              errMsg.includes("RESOURCE_EXHAUSTED") ||
-              errMsg.includes("quota")
-            ) {
-              markModelCooldown(modelName, 60000);
-              console.log(`[Chat Model Fallback] ${modelName} limit/quota reached. Cooling down 60s, switching model.`);
-              break;
-            }
-            await new Promise(r => setTimeout(r, 1000 * (attempt + 1)));
-          }
-        }
-        if (replyText.trim()) break;
-      }
-
-      if (!replyText.trim() && lastErr) {
-        throw lastErr;
-      }
+      const replyText = await callGeminiWithFallback({
+        ai,
+        contents: contentsList,
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+        },
+        label: "Chat",
+      });
 
       res.json({ reply: replyText.trim() });
     } catch (error: any) {
       console.error("Chat API error:", error);
-      let message = error.message || "Gemini AI উত্তর দিতে পারছে না। অনুগ্রহ করে আবার চেষ্টা করুন।";
-      if (message.includes("429") || message.includes("RESOURCE_EXHAUSTED") || message.includes("quota")) {
-        message = "Gemini API ফ্রি কোটা সীমা সাময়িকভাবে পূর্ণ হয়েছে। অনুগ্রহ করে ১ মিনিট অপেক্ষা করে আবার চেষ্টা করুন।";
-      }
+      const message = formatGeminiErrorMessage(error, "Gemini AI উত্তর দিতে পারছে না। অনুগ্রহ করে আবার চেষ্টা করুন।");
       res.status(500).json({
         error: message
       });

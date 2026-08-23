@@ -40,14 +40,14 @@ const uni2bijoy_string_conversion_map: { [key: string]: string } = {
   "স": "m", "হ": "n", "\u09DC": "o", "\u09DD": "p", "\u09DF": "q", "ৎ": "r",
   "০": "0", "১": "1", "২": "2", "৩": "3", "৪": "4", "৫": "5", "৬": "6", "৭": "7", "৮": "8", "৯": "9",
   "া": "v", "ি": "w", "ী": "x", "ু": "y", "ূ": "~", "…": "...", "ৃ": "…", "ে": "‡", "ৈ": "‰", "ৗ": "Š",
-  "ং": "s", "ঃ": "t", "ঁ": "u", "—": "Ñ"
+  "ং": "s", "ঃ": "t", "ঁ": "u", "—": "-", "–": "-", "‑": "-"
 };
 
 const bijoyKarReplacements: { [key: string]: string } = {
   "¨y": "y¨", "¨~": "~¨", "vu": "uv", "¨u": "u¨", "Ky": "Kz", "K~": "K‚", "Py": "Pz", "P~": "P‚",
   "Qy": "Qz", "Q~": "Q‚", "Sy": "Sz", "S~": "S‚", "Uy": "Uz", "U~": "U‚", "Vy": "Vz", "V~": "V‚",
   "Wy": "Wz", "W~": "W‚", "Xy": "Xz", "X~": "X‚", "Zy": "Zz", "Z~": "Z‚", "dy": "dz", "d~": "d‚",
-  "fy": "fz", "f~": "f‚", "¶y": "¶z", "¶~": "¶‚", "Áy": "Áz", "Á~": "Á‚", "þy": "þz", "þ~": "þ‚",
+  "fy": "fz", "f~": "f‚", "¶y": "¶z", "¶~": "¶‚", "ÿy": "¶z", "ÿ~": "¶‚", "Áy": "Áz", "Á~": "Á‚", "þy": "þz", "þ~": "þ‚",
   "¾y": "¾z", "¾~": "¾‚", "°y": "°z", "°~": "°‚", "¼y": "¼z", "¼~": "¼‚", "Üy": "Üz", "Ü~": "Ü‚",
   "×y": "×z", "×~": "x‚", "äy": "äz", "ä~": "ä‚",
   "§…": "§„", "¥…": "¥„", "c…": "c„", "N…": "N„", "g…": "g„", "e…": "e„", "k…": "k„", "L…": "L„",
@@ -149,9 +149,63 @@ function ReArrangeUnicodeText(str: string): string {
   return n;
 }
 
+export function convertToSmartQuotes(text: string): string {
+  if (!text) return "";
+
+  const convertPlain = (s: string): string => {
+    if (!s) return "";
+
+    // 1. Double quotes: "word" -> “word”
+    let res = s.replace(/(^|[\s\(\[\{\<\>\,\:\;\-\–\—])"([^\s])/g, '$1“$2');
+    res = res.replace(/([^\s])"([\s\(\)\[\]\{\}\<\>\,\.\?\!\:\;\-\–\—]|$)/g, '$1”$2');
+    res = res.replace(/"([^"]+)"/g, '“$1”');
+    res = res.replace(/"/g, '”');
+
+    // 2. Single quotes / inverted commas: 'word' -> ‘word’
+    // Pairs around words/phrases
+    res = res.replace(/(^|[\s\(\[\{\<\>\,\:\;\-\–\—])'([^\s'][^'\n\r]*?[^\s'])'([\s\(\)\[\]\{\}\<\>\,\.\?\!\:\;\-\–\—]|$)/g, '$1‘$2’$3');
+    // Single quotes around single char e.g. 'ক' or 'a' or '1'
+    res = res.replace(/(^|[\s\(\[\{\<\>\,\:\;\-\–\—])'([^\s'])'([\s\(\)\[\]\{\}\<\>\,\.\?\!\:\;\-\–\—]|$)/g, '$1‘$2’$3');
+    // Opening single quote: after space, bracket, or punctuation
+    res = res.replace(/(^|[\s\(\[\{\<\>\,\:\;\-\–\—])'([^\s])/g, '$1‘$2');
+    // Closing single quote / apostrophe: after non-space
+    res = res.replace(/([^\s])'([\s\(\)\[\]\{\}\<\>\,\.\?\!\:\;\-\–\—]|$)/g, '$1’$2');
+    // Any remaining stray single quote
+    res = res.replace(/'/g, '’');
+
+    return res;
+  };
+
+  // If text contains HTML tags, protect tag names and attributes
+  if (/<[a-zA-Z\/][^>]*>/i.test(text)) {
+    const parts = text.split(/(<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>)/gi);
+    return parts.map(part => {
+      if (!part) return "";
+      if (/^<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>$/i.test(part)) {
+        return part;
+      }
+      return convertPlain(part);
+    }).join('');
+  }
+
+  return convertPlain(text);
+}
+
 export function unicodeToBijoy(text: string): string {
   if (!text) return "";
   let n = normalizeBengaliNukta(text);
+
+  // Normalize all Unicode dash variants to standard ASCII hyphen
+  n = n.replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212\uFE58\uFE63\uFF0D]/g, "-");
+  // Clean soft hyphens and zero-width spaces
+  n = n.replace(/[\u00AD\u200B]/g, "");
+
+  // Fix space before commas (e.g. "এপ্রিল , ২০২৬" -> "এপ্রিল, ২০২৬")
+  n = n.replace(/ +\,/g, ",");
+
+  // Convert straight quotes to smart curly inverted commas
+  n = convertToSmartQuotes(n);
+
   n = n.replace(/ব়/g, "র");
   n = n.replace(/ো/g, "ে\u09BE").replace(/ৌ/g, "ে\u09D7");
   n = n.replace(/্র্য/g, "্র\u200D্য");
@@ -173,6 +227,25 @@ export function unicodeToBijoy(text: string): string {
   n = n.replace(/\(‰/g, "(ˆ").replace(/\[‰/g, "[ˆ").replace(/Ô‰/g, "Ôˆ").replace(/Ò‰/g, "Òˆ");
   n = replaceAll(n, karPatterns);
   n = replaceAll(n, roFolaPatterns);
+
+  // Ensure e-kar (‡ -> †) and oi-kar (‰ -> ˆ) are properly styled after punctuation, space, comma, hyphen
+  n = n.replace(/ ‡/g, " †").replace(/ ‰/g, " ˆ");
+  n = n.replace(/,‡/g, ",†").replace(/,‰/g, ",ˆ");
+  n = n.replace(/, ‡/g, ", †").replace(/, ‰/g, ", ˆ");
+  n = n.replace(/-‡/g, "-†").replace(/-‰/g, "-ˆ");
+  n = n.replace(/:‡/g, ":†").replace(/:‰/g, ":ˆ");
+  n = n.replace(/;‡/g, ";†").replace(/;‰/g, ";ˆ");
+  n = n.replace(/\/‡/g, "/†").replace(/\/‰/g, "/ˆ");
+  n = n.replace(/\|‡/g, "|†").replace(/\|‰/g, "|ˆ");
+  n = n.replace(/!‡/g, "!†").replace(/!‰/g, "!ˆ");
+  n = n.replace(/\?‡/g, "?†").replace(/\?‰/g, "?ˆ");
+  n = n.replace(/"‡/g, '"†').replace(/"‰/g, '"ˆ');
+  n = n.replace(/'‡/g, "'†").replace(/'‰/g, "'ˆ");
+  n = n.replace(/“‡/g, "“†").replace(/“‰/g, "“ˆ");
+  n = n.replace(/”‡/g, "”†").replace(/”‰/g, "”ˆ");
+  n = n.replace(/‘‡/g, "‘†").replace(/‘‰/g, "‘ˆ");
+  n = n.replace(/’‡/g, "’†").replace(/’‰/g, "’ˆ");
+
   return n;
 }
 
@@ -181,6 +254,24 @@ export function unicodeToBijoy(text: string): string {
 function invertConversionMap(map: { [key: string]: string }): { [key: string]: string } {
   const inv: { [key: string]: string } = {};
   for (const k in map) { inv[map[k]] = k; }
+  inv["-"] = "-";
+  inv[","] = ",";
+  inv["."] = ".";
+  inv["?"] = "?";
+  inv["!"] = "!";
+  inv[":"] = ":";
+  inv[";"] = ";";
+  inv["/"] = "/";
+  inv["|"] = "।";
+  inv["("] = "(";
+  inv[")"] = ")";
+  inv["["] = "[";
+  inv["]"] = "]";
+  inv["Ñ"] = "-";
+  inv["ÿ"] = "ক্ষ";
+  inv["ÿè"] = "ক্ষ্ন";
+  inv["•ÿ"] = "ঙ্ক্ষ";
+  inv["ÿæ"] = "ক্ষ্র";
   return inv;
 }
 
@@ -336,6 +427,9 @@ export function cleanupOrphanedVowels(text: string): string {
   if (!text) return "";
   let s = text;
 
+  // Replace any leftover ÿ character inside converted/Unicode text with 'ক্ষ'
+  s = s.replace(/ÿ/g, 'ক্ষ');
+
   // 1. Swap Anusvar and trailing vowel sign (e.g. "লংিক" -> "লিংক", "সংিক" -> "সিংক")
   s = s.replace(/([\u0995-\u09B9\u09DC\u09DD\u09DF])\u0982([\u09BE\u09BF\u09C0\u09C1\u09C2\u09C3\u09C7\u09C8\u09CB\u09CC])/g, '$1$2\u0982');
 
@@ -369,11 +463,21 @@ const ENGLISH_KEYWORDS_SET = new Set([
   'public', 'private', 'protected', 'import', 'export', 'byte', 'bytes', 'bit', 'bits',
   'memory', 'tag', 'tags', 'element', 'empty', 'container', 'close', 'closing',
   'gk', 'ict', 'mcq', 'exam', 'weekly', 'set', 'set-a', 'set-b', 'set-c', 'set-d',
-  'page', 'no', 'offline', 'online', 'subjective', 'objective', 'vap-kha',
+  'page', 'no', 'offline', 'online', 'subjective', 'objective', 'vap-kha', 'vap-ka', 'vap-ga', 'vap-gha',
+  'vap', 'kha', 'ka', 'ga', 'gha', 'time', 'live', '2nd', '1st', '3rd', 'version', 'model', 'code', 'paper', 'subject', 'class', 'bd',
   'html', 'css', 'js', 'url', 'ip', 'tcp', 'udp', 'http', 'https', 'ftp', 'ram', 'rom', 'cpu', 'alu', 'bios', 'os',
   'letter', 'letters', 'link', 'links', 'code', 'src', 'href', 'img', 'br', 'hr', 'input', 'body', 'head', 'title',
-  'c', 'a', 'b', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-  'www.bangladesh.gov.bd'
+  'www.bangladesh.gov.bd',
+  'syllabus', 'check', 'solution', 'repeat', 'parallel', 'ensure', 'quality', 'source',
+  'correction', 'by', 'name', 'date', 'time', 'marks', 'total', 'roll', 'reg',
+  'candidate', 'center', 'signature', 'invigilator', 'examiner', 'question', 'part',
+  'section', 'group', 'note', 'instructions', 'read', 'carefully', 'answer', 'all',
+  'questions', 'correct', 'option', 'true', 'false', 'fill', 'in', 'the', 'blanks',
+  'match', 'following', 'column', 'etc', 'pritilata', 'waddedar', 'khudiram', 'bose',
+  'mastarda', 'surya', 'sen', 'bhagat', 'singh',
+  'and', 'for', 'to', 'in', 'on', 'at', 'by', 'with', 'from', 'as', 'is', 'are', 'was', 'were',
+  'be', 'this', 'that', 'it', 'an', 'a', 'or', 'not', 'but', 'if', 'so', 'up', 'out', 'all',
+  'no', 'yes', 'can', 'will', 'just'
 ]);
 
 export function isEnglishOrCodeToken(str: string): boolean {
@@ -391,26 +495,35 @@ export function isEnglishOrCodeToken(str: string): boolean {
   // 3. Math symbols / equations / operators
   if (/^[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫\+\-\*\/\%\×\÷\±\°]+$/.test(trimmed)) return true;
 
+  // 4. Check if it contains Bijoy-specific characters, markers, backtick, tilde, or ANSI symbols
+  if (/[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ\`~_^&|]/.test(trimmed)) {
+    return false; // Definitely Bijoy
+  }
+
+  // Check if string consists purely of English letters, spaces, numbers, and basic punctuation
+  if (/^[a-zA-Z0-9\s\.\,\(\)\-\+\/\:\;\#\%\$\&\=\?\|\[\]\{\}]+$/.test(trimmed)) {
+    const words = trimmed.toLowerCase().replace(/[^a-z]/g, ' ').split(/\s+/).filter(Boolean);
+    if (words.length > 0) {
+      const knownCount = words.filter(w => ENGLISH_KEYWORDS_SET.has(w)).length;
+      if (knownCount >= words.length * 0.5 || /[A-Z]{3,}/.test(trimmed)) {
+        return true;
+      }
+    }
+  }
+
   // Strip leading/trailing punctuation/brackets/quotes
   let core = trimmed.replace(/^[\s\p{P}\p{S}\u0964\u0965]+|[\s\p{P}\p{S}\u0964\u0965]+$/gu, '');
-  if (!core) return true; // pure punctuation/numbers
+  if (!core) return false; // let punctuation convert or follow context
 
   let lowerCore = core.toLowerCase();
 
-  // 4. Explicit known English tech / programming / exam keywords or single English option letters
+  // 5. Explicit known English tech / programming / exam keywords of 2+ characters
   if (ENGLISH_KEYWORDS_SET.has(lowerCore)) return true;
 
-  // 5. Standalone English numbers or alphanumeric codes (like Set-A, Exam-15, GK-03, 2026, 2nd, 01, 02)
+  // 6. Alphanumeric codes mixed with digits (like Set-A, Exam-15, GK-03, 2nd)
   if (/^[a-zA-Z0-9\-\.\_]+$/.test(core)) {
-    // If it contains numbers mixed with English letters (like 2nd, GK-03, Exam-15, Set-A, VAP-KHA)
+    // If it contains digits mixed with English letters (like 2nd, GK-03, Exam-15, Set-A)
     if (/[0-9]/.test(core) && /[a-zA-Z]/.test(core)) return true;
-    // If it's a pure number like 01, 02, 1, 4, 8, 10
-    if (/^[0-9]+$/.test(core)) return true;
-  }
-
-  // 6. Check if it contains Bijoy-specific non-ASCII characters
-  if (/[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(core)) {
-    return false; // Definitely Bijoy
   }
 
   return false;
@@ -419,6 +532,7 @@ export function isEnglishOrCodeToken(str: string): boolean {
 function convertBijoyTokenToUnicode(text: string): string {
   let n = normalizeBengaliNukta(text);
 
+  n = n.replace(/ÿ/g, "¶");
   n = n.split("†").join("‡").split("ˆ").join("‰");
 
   n = n.replace(/ +/g, " ");
@@ -442,32 +556,33 @@ function convertBijoyTokenToUnicode(text: string): string {
 export function bijoyToUnicode(text: string): string {
   if (!text) return "";
 
-  // If text contains HTML tags, URLs, spaces, or is long, process token by token
-  if (/[\s<>]/g.test(text) || text.length > 20) {
-    const parts = text.split(/(<[a-zA-Z0-9\/_\-\=\s"'%]+>|(?:https?:\/\/|www\.)[a-zA-Z0-9\.\-_]+|\s+)/gi);
+  let cleaned = text.replace(/ÿ/g, "¶");
+
+  // If text contains HTML tags or URLs, process preserving those tags
+  if (/<[a-zA-Z\/][^>]*>/i.test(cleaned) || /(?:https?:\/\/|www\.)/i.test(cleaned)) {
+    const parts = cleaned.split(/(<[a-zA-Z0-9\/_\-\=\s"'%]+>|(?:https?:\/\/|www\.)[a-zA-Z0-9\.\-_]+)/gi);
     const convertedParts = parts.map(part => {
       if (!part) return "";
-      if (/^\s+$/.test(part)) return part;
       if (/^<[a-zA-Z0-9\/_\-\=\s"'%]+>$/i.test(part)) return part;
       if (/^(?:https?:\/\/|www\.)[a-zA-Z0-9\.\-_]+/i.test(part)) return part;
       if (isEnglishOrCodeToken(part)) return part;
-
       return convertBijoyTokenToUnicode(part);
     });
 
     return cleanupOrphanedVowels(convertedParts.join(''));
   }
 
-  if (isEnglishOrCodeToken(text)) {
-    return text;
+  if (isEnglishOrCodeToken(cleaned)) {
+    return cleaned;
   }
 
-  return cleanupOrphanedVowels(convertBijoyTokenToUnicode(text));
+  return cleanupOrphanedVowels(convertBijoyTokenToUnicode(cleaned));
 }
 
 export function normalizeUnicode(text: string): string {
   if (!text) return "";
   return text
+    .replace(/ÿ/g, "ক্ষ")
     .replace(/\u09CD\u09CD/g, "\u09CD")
     .replace(/অা/g, "আ")
     .replace(/\u200D/g, "");
@@ -508,7 +623,16 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
   // Strip leading and trailing punctuation, dandi (\u0964, \u0965), and whitespace to find the core word
   let core = trimmed.replace(/^[\s\p{P}\p{S}\u0964\u0965]+|[\s\p{P}\p{S}\u0964\u0965]+$/gu, '');
   if (!core) {
-    return /^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\⇒\∴\×\÷\±\≠\≤\≥\≈\∞\π\θ\α\β\γ\δ\Δ\λ\μ\σ\ω\∑\∫\√\²\³\¹\⁰\ⁿ\₁\₂\₃\₀\ₙ\s\u0964\u0965]+$/.test(trimmed);
+    // Pure punctuation (e.g. "?", "!", ":", "-", "___?", etc.)
+    // If it contains Bengali specific punctuation like Dandi, it's not English
+    if (/[\u0964\u0965]/.test(trimmed)) {
+      return false;
+    }
+    // If it's just basic ASCII/Latin punctuation, treat as English so it renders in Times New Roman
+    if (/^[\x20-\x7E\s\u00A0]+$/.test(trimmed)) {
+      return true;
+    }
+    return false;
   }
 
   // If core contains any Bengali characters, it is not English
@@ -521,13 +645,13 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
     return false;
   }
 
-  // If core contains at least one Latin letter, or alphanumeric/symbols
+  // If core contains at least one Latin letter, it is English
   if (/[a-zA-Z]/.test(core)) {
     return true;
   }
 
-  // If it consists entirely of digits / standard ASCII & math symbols / LaTeX characters
-  if (/^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\⇒\∴\×\÷\±\≠\≤\≥\≈\∞\π\θ\α\β\γ\δ\Δ\λ\μ\σ\ω\∑\∫\√\²\³\¹\⁰\ⁿ\₁\₂\₃\₀\ₙ\s]+$/.test(core)) {
+  // If it consists entirely of digits / English numbers (e.g. "1600", "2026")
+  if (/[0-9]/.test(core) && /^[0-9\.\,\?\!\:\;\-\/\(\)\[\]\{\}\@\%\&\*\+\=\_\'\"\`\~\<\>\|\°\∠\$\#\^\&\*\®\©\™\–\—\⇒\∴\×\÷\±\≠\≤\≥\≈\∞\π\θ\α\β\γ\δ\Δ\λ\μ\σ\ω\∑\∫\√\²\³\¹\⁰\ⁿ\₁\₂\₃\₀\ₙ\s]+$/.test(core)) {
     return true;
   }
 
@@ -537,43 +661,66 @@ export function isEnglishWord(str: string, customDictStr: string = ""): boolean 
 export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'SutonnyMJ', customDictStr: string = ""): string {
   if (!text) return "";
 
+  // Convert straight quotes to smart curly quotes (e.g. 'দ্বীপ' -> ‘দ্বীপ’, "বাংলাদেশ" -> “বাংলাদেশ”)
+  const processedInput = convertToSmartQuotes(text);
+
+  const formatPlainToken = (token: string): string => {
+    if (!token.trim()) return token;
+    if (isEnglishWord(token, customDictStr)) {
+      return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${token}</span>`;
+    } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
+      let subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
+      return subParts.map(part => {
+        if (!part) return "";
+        if (isEnglishWord(part, customDictStr) || (/[a-zA-Z]/.test(part) && /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part))) {
+          return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${part}</span>`;
+        } else if (/[\u0980-\u09FF]/.test(part)) {
+          if (fontType === 'SutonnyMJ') {
+            return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(part)}</span>`;
+          } else {
+            return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${part}</span>`;
+          }
+        } else {
+          if (fontType === 'SutonnyMJ') {
+            return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(part)}</span>`;
+          } else {
+            return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${part}</span>`;
+          }
+        }
+      }).join('');
+    } else {
+      if (fontType === 'SutonnyMJ') {
+        return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(token)}</span>`;
+      } else {
+        return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${token}</span>`;
+      }
+    }
+  };
+
   // Helper to format a plain string segment (free of HTML tags)
   const formatPlainString = (str: string): string => {
     if (!str) return "";
     let tokens = str.split(/(\s+)/);
     return tokens.map(token => {
       if (!token.trim()) return token;
-      if (isEnglishWord(token, customDictStr)) {
-        return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${token}</span>`;
-      } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]/.test(token)) {
-        let subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
-        return subParts.map(part => {
-          if (!part) return "";
-          if (isEnglishWord(part, customDictStr) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) {
-            return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${part}</span>`;
-          } else if (/[\u0980-\u09FF]/.test(part)) {
-            if (fontType === 'SutonnyMJ') {
-              return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(part)}</span>`;
-            } else {
-              return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${part}</span>`;
-            }
-          } else {
-            return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${part}</span>`;
+      // Isolate commas so they always render in curved Times New Roman font
+      if (token.includes(',')) {
+        let parts = token.split(/(,+)/);
+        return parts.map(p => {
+          if (!p) return "";
+          if (/^,+$/.test(p)) {
+            return `<span class="eng-text" style="font-family: 'Times New Roman', serif; mso-ascii-font-family: 'Times New Roman'; mso-hansi-font-family: 'Times New Roman'; mso-bidi-font-family: 'Times New Roman';">${p}</span>`;
           }
+          return formatPlainToken(p);
         }).join('');
-      } else {
-        if (fontType === 'SutonnyMJ') {
-          return `<span class="bijoy-text" style="font-family: 'SutonnyMJ', sans-serif; mso-ascii-font-family: 'SutonnyMJ'; mso-hansi-font-family: 'SutonnyMJ'; mso-bidi-font-family: 'SutonnyMJ'; mso-cs-font-family: 'SutonnyMJ';">${unicodeToBijoy(token)}</span>`;
-        } else {
-          return `<span class="ben-text" style="font-family: 'SolaimanLipi', 'Solaiman Lipi', sans-serif; mso-ascii-font-family: 'SolaimanLipi'; mso-hansi-font-family: 'SolaimanLipi'; mso-bidi-font-family: 'SolaimanLipi';">${token}</span>`;
-        }
       }
+      return formatPlainToken(token);
     }).join('');
   };
 
   // If text contains HTML tags (such as <u>, </u>, <ins>, <b>, <i>, <mark>, <span...>, <div...>, etc.), split by HTML tags
-  if (/<[a-zA-Z\/][^>]*>/i.test(text)) {
-    const parts = text.split(/(<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>)/gi);
+  if (/<[a-zA-Z\/][^>]*>/i.test(processedInput)) {
+    const parts = processedInput.split(/(<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>)/gi);
     return parts.map(part => {
       if (!part) return "";
       if (/^<\/?[a-zA-Z0-9\:-]+(?:\s+[^>]*?)?>$/i.test(part)) {
@@ -589,5 +736,5 @@ export function formatHtmlTextPiece(text: string, fontType: 'SolaimanLipi' | 'Su
     }).join('');
   }
 
-  return formatPlainString(text);
+  return formatPlainString(processedInput);
 }

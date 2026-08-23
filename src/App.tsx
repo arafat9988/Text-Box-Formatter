@@ -8,6 +8,7 @@ import JSZip from 'jszip';
 import {
   convertToEnglishDigits,
   isEnglishWord,
+  isEnglishOrCodeToken,
   unicodeToBijoy,
   bijoyToUnicode,
   isBijoyText,
@@ -30,6 +31,7 @@ import { PdfToolsTab } from './components/PdfToolsTab';
 import { NewspaperTab } from './components/NewspaperTab';
 import { ImportantWebTab } from './components/ImportantWebTab';
 import { ErrorCheckerTab } from './components/ErrorCheckerTab';
+import { DqTab } from './components/DqTab';
 import { QuickLinksMenu } from './components/QuickLinksMenu';
 import { BookHistoryModal } from './components/BookHistoryModal';
 import { AuthorProfileModal } from './components/AuthorProfileModal';
@@ -63,8 +65,11 @@ export interface QcBook {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'converter' | 'important-web' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat' | 'wcr' | 'pdf-tools' | 'newspaper' | 'error-checker'>('converter');
-  const [subjectCode, setSubjectCode] = useState<'Ban' | 'Eng' | 'GK'>('Ban');
+  const [activeTab, setActiveTab] = useState<'converter' | 'important-web' | 'formatter' | 'right-formatter' | 'question-collect' | 'version' | 'chat' | 'wcr' | 'pdf-tools' | 'newspaper' | 'error-checker' | 'dq'>('converter');
+  const [subjectCode, setSubjectCode] = useState<string>('Ban');
+  const [customSubject, setCustomSubject] = useState<string>('');
+  const [numMode, setNumMode] = useState<'file' | 'auto' | 'custom'>('file');
+  const [customStartNum, setCustomStartNum] = useState<number>(1);
 
   const [converterPreviewText, setConverterPreviewText] = useState<string>('');
   const [converterHtmlPreview, setConverterHtmlPreview] = useState<string>('');
@@ -145,125 +150,277 @@ export default function App() {
     return /sutonny|bijoy|mjsutonny|sutonn|\bmj\b/i.test(combinedValues);
   };
 
-  const processDocxXmlContentClient = (xmlContent: string): string => {
-    return xmlContent.replace(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g, (rXml) => {
-      let runFullText = "";
-      
-      const rPrMatch = rXml.match(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/i);
-      const baseRPr = rPrMatch ? rPrMatch[0] : "";
+  const mergeAdjacentRuns = (containerXml: string): string => {
+    return containerXml.replace(/(<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>)(?:\s*(<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>))+/gi, (match) => {
+      const runMatches = match.match(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/gi);
+      if (!runMatches || runMatches.length <= 1) return match;
 
-      const getUpdatedRPr = (fontName: 'SutonnyMJ' | 'Times New Roman'): string => {
-        const fontXml = `<w:rFonts w:ascii="${fontName}" w:hAnsi="${fontName}" w:cs="${fontName}" w:eastAsia="${fontName}"/>`;
-        if (!baseRPr) return `<w:rPr>${fontXml}</w:rPr>`;
-        if (/<w:rFonts\s+[^>]*\/>/i.test(baseRPr)) {
-          return baseRPr.replace(/<w:rFonts\s+[^>]*\/>/i, fontXml);
-        } else {
-          return baseRPr.replace(/(<w:rPr(?:\s[^>]*)?>)/i, `$1${fontXml}`);
+      const mergedRuns: string[] = [];
+      let currentRPr = "";
+      let currentTexts: string[] = [];
+
+      const flush = () => {
+        if (currentTexts.length > 0) {
+          const combinedText = currentTexts.join("");
+          if (currentRPr) {
+            mergedRuns.push(`<w:r>${currentRPr}<w:t xml:space="preserve">${combinedText}</w:t></w:r>`);
+          } else {
+            mergedRuns.push(`<w:r><w:t xml:space="preserve">${combinedText}</w:t></w:r>`);
+          }
+          currentTexts = [];
+          currentRPr = "";
         }
       };
 
-      // Collect all text from this run
-      rXml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
-        runFullText += xmlUnescapeText(tContent);
-        return "";
-      });
+      for (const rXml of runMatches) {
+        const rPrMatch = rXml.match(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/i);
+        const rPr = rPrMatch ? rPrMatch[0] : "";
+        
+        let tContent = "";
+        rXml.replace(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/gi, (_, t) => {
+          tContent += t;
+          return "";
+        });
 
-      if (!runFullText) return rXml;
-
-      const hasBengali = /[\u0964\u0965\u0980-\u09FF]/.test(runFullText);
-      if (!hasBengali) return rXml;
-
-      // Convert full text at once
-      const convertedFullText = runFullText.split(/([\u0964\u0965\u0980-\u09FF]+[\?\!\,\;\:]*)/g).map(part => {
-        if (/[\u0964\u0965\u0980-\u09FF]/.test(part)) {
-          return unicodeToBijoy(part);
-        }
-        return part;
-      }).join('');
-
-      const newRPr = getUpdatedRPr('SutonnyMJ');
-      let updatedR = rXml;
-      if (baseRPr) {
-        updatedR = updatedR.replace(baseRPr, newRPr);
-      } else {
-        updatedR = updatedR.replace(/(<w:r(?:\s[^>]*)?>)/i, `$1${newRPr}`);
-      }
-
-      // Put the converted text into the first <w:t> and clear others
-      let firstTFound = false;
-      updatedR = updatedR.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
-        if (!firstTFound) {
-          firstTFound = true;
-          return `${tOpen}${xmlEscapeText(convertedFullText)}${tClose}`;
+        if (rPr === currentRPr) {
+          currentTexts.push(tContent);
         } else {
-          return `${tOpen}${tClose}`;
+          flush();
+          currentRPr = rPr;
+          currentTexts.push(tContent);
         }
-      });
+      }
+      flush();
 
-      return updatedR;
+      return mergedRuns.join("");
     });
   };
 
+  const processDocxXmlContentClient = (xmlContent: string): string => {
+    // Process paragraph by paragraph (<w:p>) or table cell to retain Bengali context for punctuation runs (like "?")
+    const processRunList = (containerXml: string, containerHasBengali: boolean): string => {
+      const normalizedContainer = mergeAdjacentRuns(containerXml);
+      let prevRunWasBengali = false;
+
+      return normalizedContainer.replace(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g, (rXml) => {
+        let runFullText = "";
+        
+        const rPrMatch = rXml.match(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/i);
+        const baseRPr = rPrMatch ? rPrMatch[0] : "";
+
+        const getUpdatedRPr = (fontName: 'SutonnyMJ' | 'Times New Roman'): string => {
+          const fontXml = `<w:rFonts w:ascii="${fontName}" w:hAnsi="${fontName}" w:cs="${fontName}" w:eastAsia="${fontName}"/>`;
+          if (!baseRPr) return `<w:rPr>${fontXml}</w:rPr>`;
+          if (/<w:rFonts\s+[^>]*\/>/i.test(baseRPr)) {
+            return baseRPr.replace(/<w:rFonts\s+[^>]*\/>/i, fontXml);
+          } else {
+            return baseRPr.replace(/(<w:rPr(?:\s[^>]*)?>)/i, `$1${fontXml}`);
+          }
+        };
+
+        // Collect all text from this run
+        rXml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
+          runFullText += xmlUnescapeText(tContent);
+          return "";
+        });
+
+        if (!runFullText) return rXml;
+
+        const hasBengali = /[\u0964\u0965\u0980-\u09FF]/.test(runFullText);
+        const isPurePunctuationOrSymbol = /^[\s\p{P}\p{S}]+$/u.test(runFullText) || /^[\s!?.:;,\-–—()[\]{}'"/<>=\+*#@%^&]+$/.test(runFullText);
+        const isEnglishLetterRun = /[a-zA-Z]/.test(runFullText);
+
+        const shouldConvertToBijoy = hasBengali || (isPurePunctuationOrSymbol && (prevRunWasBengali || containerHasBengali) && !isEnglishLetterRun);
+
+        if (!shouldConvertToBijoy) {
+          if (isEnglishLetterRun) {
+            prevRunWasBengali = false;
+          }
+          return rXml;
+        }
+
+        if (hasBengali) {
+          prevRunWasBengali = true;
+        }
+
+        // Convert full text with context-preserving logic
+        let convertedFullText = "";
+        if (!isEnglishLetterRun) {
+          convertedFullText = unicodeToBijoy(runFullText);
+        } else {
+          const tokens = runFullText.split(/(\s+)/);
+          convertedFullText = tokens.map(token => {
+            if (!token.trim()) return token;
+            if (isEnglishWord(token)) return token;
+            if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z]/.test(token)) {
+              let subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
+              return subParts.map(part => {
+                if (!part) return "";
+                if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) return part;
+                return unicodeToBijoy(part);
+              }).join('');
+            }
+            if (/[\u0980-\u09FF]/.test(token)) {
+              return unicodeToBijoy(token);
+            }
+            return token;
+          }).join('');
+        }
+
+        const newRPr = getUpdatedRPr('SutonnyMJ');
+        let updatedR = rXml;
+        if (baseRPr) {
+          updatedR = updatedR.replace(baseRPr, newRPr);
+        } else {
+          updatedR = updatedR.replace(/(<w:r(?:\s[^>]*)?>)/i, `$1${newRPr}`);
+        }
+
+        // Put the converted text into the first <w:t> and clear others
+        let firstTFound = false;
+        updatedR = updatedR.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
+          if (!firstTFound) {
+            firstTFound = true;
+            return `${tOpen}${xmlEscapeText(convertedFullText)}${tClose}`;
+          } else {
+            return `${tOpen}${tClose}`;
+          }
+        });
+
+        return updatedR;
+      });
+    };
+
+    if (/<w:p(?:\s[^>]*)?>/i.test(xmlContent)) {
+      return xmlContent.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, (pXml) => {
+        const textContent = pXml.replace(/<[^>]+>/g, ' ').toLowerCase();
+        if (
+          textContent.includes('syllabus check') ||
+          textContent.includes('solution check') ||
+          textContent.includes('repeat check') ||
+          textContent.includes('parallel ensure') ||
+          textContent.includes('quality ensure') ||
+          textContent.includes('correction by name') ||
+          textContent.includes('source') ||
+          textContent.includes('vap') ||
+          textContent.includes('online_live') ||
+          textContent.includes('2nd time')
+        ) {
+          return pXml;
+        }
+        const paragraphHasBengali = /[\u0964\u0965\u0980-\u09FF]/.test(pXml);
+        return processRunList(pXml, paragraphHasBengali);
+      });
+    }
+
+    return processRunList(xmlContent, /[\u0964\u0965\u0980-\u09FF]/.test(xmlContent));
+  };
+
   const processDocxXmlContentToUnicodeClient = (xmlContent: string): string => {
-    return xmlContent.replace(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g, (rXml) => {
-      // 1. Extract all text from this run
-      let runFullText = "";
-      const tMatches: { open: string, content: string, close: string }[] = [];
-      
-      const rPrMatch = rXml.match(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/i);
-      const baseRPr = rPrMatch ? rPrMatch[0] : "";
+    const processRunList = (containerXml: string, containerIsBijoy: boolean): string => {
+      const normalizedContainer = mergeAdjacentRuns(containerXml);
+      let prevRunWasBijoy = false;
 
-      const getUpdatedRPr = (fontName: 'SolaimanLipi' | 'Times New Roman'): string => {
-        const fontXml = `<w:rFonts w:ascii="${fontName}" w:hAnsi="${fontName}" w:cs="${fontName}" w:eastAsia="${fontName}"/>`;
-        if (!baseRPr) return `<w:rPr>${fontXml}</w:rPr>`;
-        if (/<w:rFonts\s+[^>]*\/>/i.test(baseRPr)) {
-          return baseRPr.replace(/<w:rFonts\s+[^>]*\/>/i, fontXml);
-        } else {
-          return baseRPr.replace(/(<w:rPr(?:\s[^>]*)?>)/i, `$1${fontXml}`);
+      return normalizedContainer.replace(/<w:r(?:\s[^>]*)?>[\s\S]*?<\/w:r>/g, (rXml) => {
+        // 1. Extract all text from this run
+        let runFullText = "";
+        
+        const rPrMatch = rXml.match(/<w:rPr(?:\s[^>]*)?>[\s\S]*?<\/w:rPr>/i);
+        const baseRPr = rPrMatch ? rPrMatch[0] : "";
+
+        const getUpdatedRPr = (fontName: 'SolaimanLipi' | 'Times New Roman'): string => {
+          const fontXml = `<w:rFonts w:ascii="${fontName}" w:hAnsi="${fontName}" w:cs="${fontName}" w:eastAsia="${fontName}"/>`;
+          if (!baseRPr) return `<w:rPr>${fontXml}</w:rPr>`;
+          if (/<w:rFonts\s+[^>]*\/>/i.test(baseRPr)) {
+            return baseRPr.replace(/<w:rFonts\s+[^>]*\/>/i, fontXml);
+          } else {
+            return baseRPr.replace(/(<w:rPr(?:\s[^>]*)?>)/i, `$1${fontXml}`);
+          }
+        };
+
+        // Collect text segments
+        rXml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
+          const raw = xmlUnescapeText(tContent);
+          runFullText += raw;
+          return "";
+        });
+
+        if (!runFullText) return rXml;
+
+        const fontIsBijoy = isBijoyFont(baseRPr);
+        const fontIsEnglish = /times new roman|calibri|arial|helvetica|segoe ui|verdana|courier new|georgia/i.test(baseRPr);
+        const hasExtendedAscii = /[^\x00-\x7F]/.test(runFullText);
+        const hasBijoyMarkers = /[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ\`~_^&|]/.test(runFullText);
+        const hasExistingUnicodeBangla = /[\u0980-\u09FF]/.test(runFullText);
+
+        if (hasExistingUnicodeBangla && !hasBijoyMarkers) {
+          prevRunWasBijoy = false;
+          return rXml;
         }
-      };
 
-      // Collect text segments
-      rXml.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
-        const raw = xmlUnescapeText(tContent);
-        runFullText += raw;
-        tMatches.push({ open: tOpen, content: raw, close: tClose });
-        return "";
-      });
-
-      if (!runFullText) return rXml;
-
-      const fontIsBijoy = isBijoyFont(baseRPr);
-      const hasExtendedAscii = /[^\x00-\x7F]/.test(runFullText);
-      const hasBijoyMarkers = /[‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏ×Ø™¢ÙÜßáäå¤§©®¯°±³µ¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ]/.test(runFullText);
-      const shouldConvert = fontIsBijoy || hasExtendedAscii || hasBijoyMarkers;
-
-      if (!shouldConvert) return rXml;
-
-      // Convert full text at once to preserve context for re-arrangement
-      const convertedFullText = bijoyToUnicode(runFullText);
-      const newRPr = getUpdatedRPr('SolaimanLipi');
-      
-      let updatedR = rXml;
-      if (baseRPr) {
-        updatedR = updatedR.replace(baseRPr, newRPr);
-      } else {
-        updatedR = updatedR.replace(/(<w:r(?:\s[^>]*)?>)/i, `$1${newRPr}`);
-      }
-
-      // We put the converted text into the FIRST <w:t> and clear the rest
-      let firstTFound = false;
-      updatedR = updatedR.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
-        if (!firstTFound) {
-          firstTFound = true;
-          return `${tOpen}${xmlEscapeText(convertedFullText)}${tClose}`;
-        } else {
-          return `${tOpen}${tClose}`; // empty text
+        if (fontIsEnglish && !hasBijoyMarkers && !fontIsBijoy) {
+          prevRunWasBijoy = false;
+          return rXml;
         }
-      });
 
-      return updatedR;
-    });
+        const isEnglishCode = isEnglishOrCodeToken(runFullText);
+        const shouldConvert = !isEnglishCode && (fontIsBijoy || hasExtendedAscii || hasBijoyMarkers || containerIsBijoy || prevRunWasBijoy);
+
+        if (!shouldConvert) {
+          prevRunWasBijoy = false;
+          return rXml;
+        }
+
+        prevRunWasBijoy = true;
+
+        // Convert full text at once to preserve context for re-arrangement
+        const convertedFullText = bijoyToUnicode(runFullText);
+        const newRPr = getUpdatedRPr('SolaimanLipi');
+        
+        let updatedR = rXml;
+        if (baseRPr) {
+          updatedR = updatedR.replace(baseRPr, newRPr);
+        } else {
+          updatedR = updatedR.replace(/(<w:r(?:\s[^>]*)?>)/i, `$1${newRPr}`);
+        }
+
+        // Put the converted text into the FIRST <w:t> and clear the rest
+        let firstTFound = false;
+        updatedR = updatedR.replace(/(<w:t(?:\s[^>]*)?>)([\s\S]*?)(<\/w:t>)/g, (_, tOpen, tContent, tClose) => {
+          if (!firstTFound) {
+            firstTFound = true;
+            return `${tOpen}${xmlEscapeText(convertedFullText)}${tClose}`;
+          } else {
+            return `${tOpen}${tClose}`; // empty text
+          }
+        });
+
+        return updatedR;
+      });
+    };
+
+    if (/<w:p(?:\s[^>]*)?>/i.test(xmlContent)) {
+      return xmlContent.replace(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g, (pXml) => {
+        const textContent = pXml.replace(/<[^>]+>/g, ' ').toLowerCase();
+        if (
+          textContent.includes('syllabus check') ||
+          textContent.includes('solution check') ||
+          textContent.includes('repeat check') ||
+          textContent.includes('parallel ensure') ||
+          textContent.includes('quality ensure') ||
+          textContent.includes('correction by name') ||
+          textContent.includes('source') ||
+          textContent.includes('vap') ||
+          textContent.includes('online_live') ||
+          textContent.includes('2nd time')
+        ) {
+          return pXml;
+        }
+        const paragraphIsBijoy = isBijoyFont(pXml) || /[†ˆ‡‰ÿ¼½¾ÁÂÃÄÅÆÉÊËÌÎÏØ™¢ÙÜßáäå¤¶º»¿ÀÇÈÍÐÑÒÓÔÕÖÚÛÝÞàâãæçèéêëìíîïðñòóôõö÷øùúûüýþÿ\`~_^&|]/.test(pXml);
+        return processRunList(pXml, paragraphIsBijoy);
+      });
+    }
+
+    return processRunList(xmlContent, isBijoyFont(xmlContent));
   };
 
   const handleFileUpload = async (file: File) => {
@@ -281,28 +438,19 @@ export default function App() {
       const htmlResult = await window.mammoth.convertToHtml({ arrayBuffer });
       const rawHtml = htmlResult.value || "";
 
-      // Convert Bengali text inside HTML text nodes to Bijoy, wrapping Bengali in bijoy-text span
+      // Convert Bengali text inside HTML text nodes to Bijoy, wrapping Bengali and question marks in bijoy-text span
       const convertedHtmlPreview = rawHtml.replace(/>([^<]+)</g, (_, textContent) => {
-        const parts = textContent.split(/([\u0964\u0965\u0980-\u09FF]+[\?\!\,\;\:]*)/g);
-        const converted = parts.map((part: string) => {
-          if (/[\u0964\u0965\u0980-\u09FF]/.test(part)) {
-            const bijoyStr = unicodeToBijoy(part);
-            return `<span class="bijoy-text">${bijoyStr}</span>`;
-          }
-          return part;
-        }).join('');
-        return `>${converted}<`;
+        return `>${formatHtmlTextPiece(textContent, 'SutonnyMJ', customDict)}<`;
       });
 
       // Plain text for clipboard copying
       const textResult = await window.mammoth.extractRawText({ arrayBuffer });
       const rawText = textResult.value || "";
       const convertedPlainText = rawText.split("\n").map((line: string) => {
-        return line.split(/([\u0964\u0965\u0980-\u09FF]+[\?\!\,\;\:]*)/g).map((part: string) => {
-          if (/[\u0964\u0965\u0980-\u09FF]/.test(part)) {
-            return unicodeToBijoy(part);
-          }
-          return part;
+        const tokens = line.split(/(\s+)/);
+        return tokens.map((token: string) => {
+          if (!token.trim()) return token;
+          return isEnglishWord(token, customDict) ? token : unicodeToBijoy(token);
         }).join('');
       }).join("\n");
 
@@ -369,15 +517,7 @@ export default function App() {
       const rawHtml = htmlResult.value || "";
 
       const convertedHtmlPreview = rawHtml.replace(/>([^<]+)</g, (_, textContent) => {
-        const parts = textContent.split(/([\u0964\u0965\u0980-\u09FF]+[\?\!\,\;\:]*)/g);
-        const converted = parts.map((part: string) => {
-          if (!part) return '';
-          if (/[\u0964\u0965\u0980-\u09FF]/.test(part)) {
-            return `<span class="ben-text">${part}</span>`;
-          }
-          return `<span class="eng-text" style="font-family: 'Times New Roman', Arial, sans-serif;">${part}</span>`;
-        }).join('');
-        return `>${converted}<`;
+        return `>${formatHtmlTextPiece(textContent, 'SolaimanLipi', customDict)}<`;
       });
 
       const textResult = await window.mammoth.extractRawText({ arrayBuffer: arrayBufferForMammoth });
@@ -430,7 +570,10 @@ export default function App() {
   const [isDraggingTab2, setIsDraggingTab2] = useState<boolean>(false);
 
   // Tab 2.5: Text Right Formatter State
-  const [subjectCodeRight, setSubjectCodeRight] = useState<'Ban' | 'Eng' | 'GK'>('Ban');
+  const [subjectCodeRight, setSubjectCodeRight] = useState<string>('Ban');
+  const [customSubjectRight, setCustomSubjectRight] = useState<string>('');
+  const [numModeRight, setNumModeRight] = useState<'file' | 'auto' | 'custom'>('file');
+  const [customStartNumRight, setCustomStartNumRight] = useState<number>(1);
   const [inputTextRight, setInputTextRight] = useState<string>('');
   const [uploadedFileNameRight, setUploadedFileNameRight] = useState<string>('');
   const [statusMsgRight, setStatusMsgRight] = useState<string>('');
@@ -445,6 +588,8 @@ export default function App() {
   const [qcFileName, setQcFileName] = useState<string>('');
   const [qcFileStatus, setQcFileStatus] = useState<string>('');
   const [qcResultText, setQcResultText] = useState<string>('');
+  const [qcFontMode, setQcFontMode] = useState<'Combo' | 'SolaimanLipi' | 'SutonnyMJ'>('Combo');
+  const [qcOptionPrefix, setQcOptionPrefix] = useState<'BAN' | 'ENG' | 'NO'>('NO');
   const [msgQc, setMsgQc] = useState<string>('');
   const [pdfPageNum, setPdfPageNum] = useState<number>(1);
   const [isCollecting, setIsCollecting] = useState<boolean>(false);
@@ -775,8 +920,12 @@ export default function App() {
             }
           }
 
-          if (['p', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'table', 'td', 'th', 'br'].includes(tag)) {
-            return childText.trimEnd() + '\n';
+          if (tag === 'br') {
+            return '\n';
+          }
+          if (['p', 'tr', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote'].includes(tag)) {
+            const trimmed = childText.trimEnd();
+            return trimmed ? trimmed + '\n' : '';
           }
           return childText;
         }
@@ -784,7 +933,7 @@ export default function App() {
       };
 
       let extractedText = processNode(doc.body);
-      extractedText = extractedText.replace(/\r\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      extractedText = extractedText.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n{2,}/g, '\n').trim();
       return { text: extractedText, hasHighlight: foundHighlight };
     } catch (err) {
       return { text: '', hasHighlight: false };
@@ -819,7 +968,6 @@ export default function App() {
           cleanedLines.push(currentParagraph);
           currentParagraph = '';
         }
-        cleanedLines.push('');
         continue;
       }
 
@@ -842,7 +990,7 @@ export default function App() {
       cleanedLines.push(currentParagraph);
     }
 
-    return cleanedLines.join('\n');
+    return cleanedLines.filter(l => l.trim()).join('\n');
   };
 
   /* ================= PASTE WITH HIGHLIGHT SUPPORT ================= */
@@ -893,22 +1041,21 @@ export default function App() {
   /* ================= RENDER DUAL PREVIEW ELEMENTS ================= */
   const renderFormattedSpans = (text: string, fontMode: 'SolaimanLipi' | 'SutonnyMJ', forceBijoyInput: boolean = false) => {
     if (!text || !text.trim()) return null;
-    const lines = text.split('\n');
+    const rawLines = text.split('\n');
+    const lines = rawLines.map(l => l.trim()).filter(Boolean);
 
     return lines.map((line, lIdx) => {
-      if (!line.trim()) return <p key={lIdx} style={{ margin: 0, padding: 0, minHeight: '0.5em' }}>&nbsp;</p>;
-      
       const isQuestionHeading = /^\s*(?:\d+[\.\:\)]|[\u09E6-\u09EF]+[\.\:\)])/i.test(line);
       const isExplanationLine = /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(line) || /^[\s]*[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫]/.test(line);
-      const isOptionLine = /^\s*[\(\（\[]?(?:[ক-ঘa-d]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:]\s*/i.test(line);
+      const isBookRefLine = /^\s*(?:\d+\.\s*)?(?:[A-Za-z0-9\s,\.\-_:\(\)\[\]\/]{2,60})\s*,\s*(?:Page|পৃষ্ঠা|page|p\.)/i.test(line);
       const hasHighlightIndicator = (/[*✓✔√#]\s*$/.test(line) || line.includes('mso-highlight') || line.includes('background-color') || line.includes('<mark')) && !/[a-zA-Z0-9\u0980-\u09FF]\s*\*\s*[a-zA-Z0-9\u0980-\u09FF]/.test(line);
-      const isCorrectOption = isOptionLine && hasHighlightIndicator && !isQuestionHeading && !isExplanationLine;
+      const isCorrectOption = hasHighlightIndicator && !isQuestionHeading && !isExplanationLine && !isBookRefLine;
 
       const formattedHtml = formatHtmlTextPiece(line, fontMode, customDict);
 
       if (isCorrectOption) {
         return (
-          <p key={lIdx} style={{ margin: '2px 0', padding: 0, lineHeight: 1.3 }}>
+          <p key={lIdx} style={{ margin: '1px 0', padding: 0, lineHeight: 1.25 }}>
             <span style={{ backgroundColor: '#00ff00', background: '#00ff00', msoHighlight: 'lime', color: '#000000', fontWeight: 'normal', padding: '1px 6px', borderRadius: '3px' } as any}>
               <mark style={{ backgroundColor: '#00ff00', background: '#00ff00', msoHighlight: 'lime', color: '#000000', fontWeight: 'normal' } as any} dangerouslySetInnerHTML={{ __html: formattedHtml }} />
             </span>
@@ -917,9 +1064,127 @@ export default function App() {
       }
 
       return (
-        <p key={lIdx} style={{ margin: 0, padding: 0, lineHeight: 1.25 }} dangerouslySetInnerHTML={{ __html: formattedHtml }} />
+        <p key={lIdx} style={{ margin: '1px 0', padding: 0, lineHeight: 1.25 }} dangerouslySetInnerHTML={{ __html: formattedHtml }} />
       );
     });
+  };
+
+  /* ================= QC OPTION PREFIX FORMATTER ================= */
+  const applyQcOptionPrefixToText = (rawText: string, mode: 'BAN' | 'ENG' | 'NO'): string => {
+    if (!rawText || !rawText.trim()) return rawText;
+
+    const blocks = rawText.split(/\n{2,}/);
+    const banPrefixes = ['(ক)', '(খ)', '(গ)', '(ঘ)'];
+    const engPrefixes = ['(a)', '(b)', '(c)', '(d)'];
+
+    const isRefHeaderLine = (line: string): boolean => {
+      const t = line.trim();
+      if (!t) return false;
+      if (/^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(t)) return false;
+      if (t.startsWith('<img')) return false;
+
+      // e.g. "27. MQB page 137 q 08", "mqb p 138 q 25", "1. পেজ: ১০, প্রশ্ন: ৪", "Page 137, Q 08", "(Physics, Page 12)"
+      const hasPageKeyword = /\b(?:page|পৃষ্ঠা|p\.|pg|p)\s*[\:\.\s]?\s*[\d\u09E6-\u09EF]+/i.test(t);
+      const hasQKeyword = /\b(?:q|ques|question|প্রশ্ন)\s*[\:\.\s]?\s*[\d\u09E6-\u09EF]+/i.test(t);
+      const hasBracketRef = /^\s*(?:\d+[\.\:\)]\s*)?\([A-Za-z0-9\u0980-\u09FF\s,\.\-_:\(\)\[\]\/]{2,60}\s*,\s*(?:Page|পৃষ্ঠা|page|p\.)/i.test(t);
+
+      if (hasBracketRef) return true;
+      if (hasPageKeyword && (hasQKeyword || /^\s*\d+[\.\:\)]/i.test(t) || /\b(?:mqb|tb|pb|biology|physics|chemistry|math|bangla|english|gk)\b/i.test(t))) {
+        return true;
+      }
+      if (/^\s*(?:\d+[\.\:\)]\s*)?(?:[A-Za-z0-9\u0980-\u09FF\-_]+\s+)+(?:page|পৃষ্ঠা|p\.|pg)\s*[\d\u09E6-\u09EF]+/i.test(t)) {
+        return true;
+      }
+      return false;
+    };
+
+    const processedBlocks = blocks.map(block => {
+      const lines = block.split('\n');
+      if (lines.length <= 1) return block;
+
+      let questionLineIdx = -1;
+      let explanationLineIdx = -1;
+
+      // Check if first non-empty line is a reference header
+      let firstNonEmptyIdx = -1;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].trim()) {
+          firstNonEmptyIdx = i;
+          break;
+        }
+      }
+
+      if (firstNonEmptyIdx !== -1 && isRefHeaderLine(lines[firstNonEmptyIdx])) {
+        // Line firstNonEmptyIdx is reference header, the next non-empty line is question
+        for (let i = firstNonEmptyIdx + 1; i < lines.length; i++) {
+          if (lines[i].trim()) {
+            questionLineIdx = i;
+            break;
+          }
+        }
+      } else if (firstNonEmptyIdx !== -1) {
+        // First line is question directly
+        questionLineIdx = firstNonEmptyIdx;
+      }
+
+      // Find where explanation or images start
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i].trim();
+        if (!line) continue;
+        const isExplanation = /^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(line);
+        if (isExplanation && explanationLineIdx === -1) {
+          explanationLineIdx = i;
+          break;
+        }
+      }
+
+      const optStart = questionLineIdx !== -1 ? questionLineIdx + 1 : 0;
+      const optEnd = explanationLineIdx !== -1 ? explanationLineIdx : lines.length;
+
+      let optCount = 0;
+      const newLines = lines.map((line, idx) => {
+        const trimmed = line.trim();
+        if (!trimmed) return line;
+
+        // Ensure question line itself NEVER has option prefix (strip if accidentally added previously)
+        if (idx === questionLineIdx) {
+          return trimmed.replace(/^\s*[\(\（\[]?(?:[ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:\-]\s*/i, '').trim();
+        }
+
+        // Option lines (starting from line after question)
+        if (
+          idx >= optStart &&
+          idx < optEnd &&
+          !isRefHeaderLine(trimmed) &&
+          !trimmed.startsWith('<img') &&
+          !/^(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(trimmed)
+        ) {
+          const cleanOpt = trimmed.replace(/^\s*[\(\（\[]?(?:[ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:\-]\s*/i, '').trim();
+          let prefix = '';
+          if (mode === 'BAN') {
+            prefix = (banPrefixes[optCount] || '') + ' ';
+          } else if (mode === 'ENG') {
+            prefix = (engPrefixes[optCount] || '') + ' ';
+          } else {
+            prefix = '';
+          }
+          optCount++;
+          return `${prefix}${cleanOpt}`;
+        }
+        return line;
+      });
+
+      return newLines.join('\n');
+    });
+
+    return processedBlocks.join('\n\n');
+  };
+
+  const handleQcOptionPrefixChange = (newMode: 'BAN' | 'ENG' | 'NO') => {
+    setQcOptionPrefix(newMode);
+    if (qcResultText && qcResultText.trim()) {
+      setQcResultText(prev => applyQcOptionPrefixToText(prev, newMode));
+    }
   };
 
   /* ================= COPY & DOWNLOAD ACTIONS ================= */
@@ -1014,16 +1279,17 @@ export default function App() {
   };
 
   const copyUnicodeConverterText = (rawText: string, isBijoyInput: boolean, setMsg: (msg: string) => void) => {
+    const cleanedText = rawText.split('\n').map(l => l.trim()).filter(Boolean).join('\n');
     if (isBijoyInput) {
-      const converted = rawText.split('\n').map(line => bijoyToUnicode(line)).join('\n');
+      const converted = cleanedText.split('\n').map(line => bijoyToUnicode(line)).join('\n');
       copyFormattedContent('converterResultBox', setMsg, converted);
     } else {
-      copyFormattedContent('converterResultBox', setMsg, rawText);
+      copyFormattedContent('converterResultBox', setMsg, cleanedText);
     }
   };
 
   const copyBijoyText = (rawText: string, setMsg: (msg: string) => void) => {
-    const lines = rawText.split('\n');
+    const lines = rawText.split('\n').map(l => l.trim()).filter(Boolean);
     const bijoyLines = lines.map(line => {
       const tokens = line.split(/(\s+)/);
       return tokens.map(token => {
@@ -1049,36 +1315,54 @@ export default function App() {
   const downloadWordDoc = async (htmlInnerContent: string, primaryFont: string, filename: string, setMsg: (m: string) => void, includeCorrectionHeader: boolean = false) => {
     let formattedHtml = htmlInnerContent || '';
 
-    const topHeaderTitle = `<p align="center" style="text-align: center; font-weight: bold; font-size: 11pt; margin-bottom: 12px; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important;"><b>arafat-3802-bangla-english-fixer</b></span></p>`;
+    const topHeaderTitle = `<p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-bottom: 12px; font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; mso-bidi-font-family: 'Times New Roman' !important;"><span class="eng-text" style="font-family: 'Times New Roman', serif !important; mso-ascii-font-family: 'Times New Roman' !important; mso-hansi-font-family: 'Times New Roman' !important; font-size: 10pt;"><b>VAP-KHA_(2026)_2nd Time_(Offline)_Ban/Eng/GK_MCQ_Daily/Weekly_Exam-0_Set-A</b></span></p>`;
 
     // If htmlInnerContent is raw text without HTML tags (<p>, <table>, <div>, etc.)
     if (!/<(?:p|table|div|tr|td)\b/i.test(formattedHtml)) {
       const lines = formattedHtml.split('\n');
-      formattedHtml = lines.map(line => {
-        if (!line.trim()) return '<p style="margin:0; padding:0; min-height:1.2em;">&nbsp;</p>';
-        const isOptionLine = /^\s*[\(\（\[]?(?:[ক-ঘa-d1-4১-৪0-4])[\)\）\]\.\:]/i.test(line);
-        const isCorrectOption = isOptionLine && (/[*✓✔√#]/.test(line) || line.includes('mso-highlight') || line.includes('background-color') || line.includes('<mark'));
+      const renderLinesWithFont = (fontName: 'SolaimanLipi' | 'SutonnyMJ') => {
+        return lines.map(line => {
+          if (!line.trim()) return '<p style="margin:0; padding:0; min-height:1.2em; font-size: 10pt;">&nbsp;</p>';
+          const isQuestionHeading = /^\s*(?:\d+[\.\:\)]|[\u09E6-\u09EF]+[\.\:\)])/i.test(line);
+          const isExplanationLine = /^\s*(?:ব্যাখ্যা|Explanation|উত্তর|সঠিক উত্তর|Ans|Answer|Note|সমাধান|বিবরণ)[\:\-\s]/i.test(line) || /^[\s]*[\=\⇒\∴\≠\≤\≥\√\π\∞\∠\∆\∑\∫]/.test(line);
+          const isBookRefLine = /^\s*(?:\d+\.\s*)?(?:[A-Za-z0-9\s,\.\-_:\(\)\[\]\/]{2,60})\s*,\s*(?:Page|পৃষ্ঠা|page|p\.)/i.test(line);
+          const hasHighlightIndicator = (/[*✓✔√#]\s*$/.test(line) || line.includes('mso-highlight') || line.includes('background-color') || line.includes('<mark')) && !/[a-zA-Z0-9\u0980-\u09FF]\s*\*\s*[a-zA-Z0-9\u0980-\u09FF]/.test(line);
+          const isCorrectOption = hasHighlightIndicator && !isQuestionHeading && !isExplanationLine && !isBookRefLine;
 
-        const lineContent = formatHtmlTextPiece(line, primaryFont === 'SutonnyMJ' ? 'SutonnyMJ' : 'SolaimanLipi', customDict);
+          const lineContent = formatHtmlTextPiece(line, fontName, customDict);
 
-        if (isCorrectOption) {
-          return `<p style="margin:0; padding:0; line-height:1.25;"><span style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; font-weight: normal; padding: 1px 4px;"><mark style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; color: #000000; font-weight: normal;">${lineContent}</mark></span></p>`;
-        }
+          if (isCorrectOption) {
+            return `<p style="margin:0; padding:0; line-height:1.25; font-size: 10pt;"><span style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; font-weight: normal; padding: 1px 4px; font-size: 10pt;"><mark style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; color: #000000; font-weight: normal; font-size: 10pt;">${lineContent}</mark></span></p>`;
+          }
 
-        return `<p style="margin:0; padding:0; line-height:1.25;">${lineContent}</p>`;
-      }).join('');
+          return `<p style="margin:0; padding:0; line-height:1.25; font-size: 10pt;">${lineContent}</p>`;
+        }).join('');
+      };
+
+      if (primaryFont === 'Combo') {
+        const solHtml = renderLinesWithFont('SolaimanLipi');
+        const sutHtml = renderLinesWithFont('SutonnyMJ');
+        formattedHtml = `
+          <p style="margin: 4px 0 6px 0; padding: 0; font-weight: bold; font-size: 10pt; color: #dc2626;"><span style="color: #dc2626; font-weight: bold; font-size: 10pt;">SolaimanLipi আউটপুট</span></p>
+          ${solHtml}
+          <p style="margin: 18px 0 6px 0; padding: 0; font-weight: bold; font-size: 10pt; color: #7c3aed;"><span style="color: #7c3aed; font-weight: bold; font-size: 10pt;">SutonnyMJ আউটপুট</span></p>
+          ${sutHtml}
+        `;
+      } else {
+        formattedHtml = renderLinesWithFont(primaryFont === 'SutonnyMJ' ? 'SutonnyMJ' : 'SolaimanLipi');
+      }
     } else {
       // Ensure all mark tags or highlighted elements get explicit inline mso-highlight: lime
       formattedHtml = formattedHtml.replace(/<mark([^>]*)>/gi, (match, p1) => {
         if (!/mso-highlight/i.test(p1)) {
-          return `<span style="background-color: #00ff00; background: #00ff00; mso-highlight: lime;"><mark${p1} style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; color: #000000; font-weight: normal;">`;
+          return `<span style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; font-size: 10pt;"><mark${p1} style="background-color: #00ff00; background: #00ff00; mso-highlight: lime; color: #000000; font-weight: normal; font-size: 10pt;">`;
         }
         return match;
       }).replace(/<\/mark>/gi, '</mark></span>');
 
       formattedHtml = formattedHtml.replace(/<span([^>]*)>/gi, (match, p1) => {
         if (/background/i.test(p1) && !/mso-highlight/i.test(p1)) {
-          return match.replace(/style=["']/, 'style="mso-highlight: lime; background-color: #00ff00; background: #00ff00; ');
+          return match.replace(/style=["']/, 'style="mso-highlight: lime; background-color: #00ff00; background: #00ff00; font-size: 10pt; ');
         }
         return match;
       });
@@ -1093,37 +1377,16 @@ export default function App() {
         .replace(/<p[^>]*>[\s\S]*?arafat-3802-bangla-english-fixer[\s\S]*?<\/p>/gi, '')
         .replace(/<p[^>]*>[\s\S]*?VAP-KHA_[\s\S]*?<\/p>/gi, '');
 
-      const defaultThreeLinesHtml = `
-        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Offline)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-A</b></span></p>
-        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 2px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Online_Live)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-B</b></span></p>
-        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 2px; margin-bottom: 4px; line-height: 1.2;"><span class="eng-text"><b>VAP-KHA_(2026)_2nd Time_(Online_Practice)_Ban/Eng/GK_MCQ_Daily_Exam-0_Set-C</b></span></p>
-      `;
-
       headerBlockHtml = `
-        <p style="margin: 0; padding: 0; margin-bottom: 4px; font-size: 11pt; line-height: 1.15;"><span class="eng-text"><b>Correction By Name: ...........................................</b></span></p>
-        <table class="wcr-table" style="width: 100%; border-collapse: collapse; margin-bottom: 6px; font-size: 11pt; line-height: 1.15;">
-          <tr>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Syllabus Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Solution adds (At least 60%) &amp; answer check</b></span></td>
-          </tr>
-          <tr>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Proofreading, Shadow &amp; Answer Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Solution Check</b></span></td>
-          </tr>
-          <tr>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Repeat Check</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Parallel Ensure (Set-A+B)</b></span></td>
-          </tr>
-          <tr>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Quality Ensure</b></span></td>
-            <td style="border: none; padding: 1px 0; width: 50%; vertical-align: top;"><span class="eng-text"><b>❏ Correction Check</b></span></td>
-          </tr>
-        </table>
-        <p align="center" style="text-align: center; font-weight: bold; font-size: 11pt; margin-top: 4px; margin-bottom: 4px;"><span class="eng-text"><b>arafat-3802-bangla-english-fixer</b></span></p>
-        ${defaultThreeLinesHtml}
+        <p style="margin: 0; padding: 0; margin-bottom: 4px; font-size: 10pt; line-height: 1.15;"><span class="eng-text" style="font-size: 10pt;"><b>Correction By Name: ...........................................</b></span></p>
+        <p style="margin: 0; padding: 0; margin-bottom: 2px; font-size: 10pt; line-height: 1.15;"><span class="eng-text" style="font-size: 10pt;"><b>❏ Syllabus Check &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ❏ Solution adds (At least 60%) &amp; answer check</b></span></p>
+        <p style="margin: 0; padding: 0; margin-bottom: 2px; font-size: 10pt; line-height: 1.15;"><span class="eng-text" style="font-size: 10pt;"><b>❏ Proofreading, Shadow &amp; Answer Check &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ❏ Solution Check</b></span></p>
+        <p style="margin: 0; padding: 0; margin-bottom: 2px; font-size: 10pt; line-height: 1.15;"><span class="eng-text" style="font-size: 10pt;"><b>❏ Repeat Check &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ❏ Parallel Ensure (Set-A+B)</b></span></p>
+        <p style="margin: 0; padding: 0; margin-bottom: 6px; font-size: 10pt; line-height: 1.15;"><span class="eng-text" style="font-size: 10pt;"><b>❏ Quality Ensure &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; ❏ Correction Check</b></span></p>
+        <p align="center" style="text-align: center; font-weight: bold; font-size: 10pt; margin-top: 4px; margin-bottom: 4px; line-height: 1.2;"><span class="eng-text" style="font-size: 10pt;"><b>VAP-KHA_(2026)_2nd Time_(Offline)_Ban/Eng/GK_MCQ_Daily/Weekly_Exam-0_Set-A</b></span></p>
       `;
     } else {
-      if (!contentBodyHtml.includes('arafat-3802-bangla-english-fixer')) {
+      if (!contentBodyHtml.includes('VAP-KHA_')) {
         headerBlockHtml = topHeaderTitle;
       }
     }
@@ -1688,19 +1951,75 @@ export default function App() {
 
           if (isMatched) {
             totalCollectedCount++;
-            let refLineHeader = line ? `${line}\n` : '';
-            let qOut = `${refLineHeader}` + block.questionText + (block.reference ? ` [${block.reference}]` : '') + '\n';
-            block.options.forEach((opt, optIdx) => {
-              if (opt) {
-                let isCorrect = block.hasTickMark && block.correctAnswerIndex === optIdx;
-                qOut += `${opt}${isCorrect ? '*' : ''}\n`;
+
+            // Extract question number
+            let qNumStr = convertToEnglishDigits(block.questionNumber || '');
+            let lineNumMatch = line ? line.match(/^\s*([০-৯\d]{1,3})\s*[\.\)\।\:]\s*/) : null;
+            if (lineNumMatch) {
+              qNumStr = convertToEnglishDigits(lineNumMatch[1]);
+            }
+            if (!qNumStr) qNumStr = String(totalCollectedCount);
+            let formattedQNum = String(qNumStr).length === 1 && /^\d+$/.test(qNumStr) ? "0" + qNumStr : qNumStr;
+
+            // Clean question text (remove leading question numbers and stray option prefixes)
+            let cleanQText = (block.questionText || '')
+              .replace(/^\s*([০-৯\d]{1,3})\s*[\.\)\।\:]\s*/, '')
+              .replace(/^\s*[\(\（\[]?(?:[ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:\-]\s*/i, '')
+              .trim();
+
+            let optionsList = [...block.options];
+            let correctIdx = block.correctAnswerIndex;
+
+            // If question text is empty or missing, check if options[0] is actually question text
+            if (!cleanQText && optionsList[0] && (optionsList[0].length > 30 || /[?।\-:]/.test(optionsList[0]) || /\[U-|\b(?:is|form|sentence|correct|negative|antonym|synonym)\b/i.test(optionsList[0]))) {
+              cleanQText = optionsList[0].replace(/^\s*[\(\（\[]?(?:[ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:\-]\s*/i, '').trim();
+              optionsList = optionsList.slice(1);
+              if (correctIdx !== -1) correctIdx = Math.max(0, correctIdx - 1);
+            }
+
+            // Line 1: Question Number + Question Text
+            let qOut = `${formattedQNum}. ${cleanQText}\n`;
+
+            const banPrefixes = ['(ক)', '(খ)', '(গ)', '(ঘ)'];
+            const engPrefixes = ['(a)', '(b)', '(c)', '(d)'];
+
+            // Lines 2..5: Options
+            optionsList.forEach((opt, optIdx) => {
+              if (opt && optIdx < 4) {
+                const cleanOpt = opt.replace(/^\s*[\(\（\[]?(?:[ক-ঘa-dA-D]|0?[1-4]|[১-৪]|0?[১-৪])[\)\）\]\.\:\-]\s*/i, '').trim();
+                let prefix = '';
+                if (qcOptionPrefix === 'BAN') {
+                  prefix = `${banPrefixes[optIdx] || ''} `;
+                } else if (qcOptionPrefix === 'ENG') {
+                  prefix = `${engPrefixes[optIdx] || ''} `;
+                }
+                let isCorrect = block.hasTickMark && correctIdx === optIdx;
+                qOut += `${prefix}${cleanOpt}${isCorrect ? '*' : ''}\n`;
               }
             });
+
             if (block.explanation) {
               let expText = cleanExplanationText(block.explanation);
               if (expText) {
                 qOut += `ব্যাখ্যা: ${expText}\n`;
               }
+            }
+
+            // Reference line at the VERY END
+            let refParts: string[] = [];
+            let cleanRefLine = line ? line.replace(/^\s*([০-৯\d]{1,3})\s*[\.\)\।\:]\s*/, '').trim() : '';
+            if (cleanRefLine) refParts.push(cleanRefLine);
+            if (block.reference && block.reference.trim() && !refParts.includes(block.reference.trim())) {
+              refParts.push(block.reference.trim());
+            }
+            if (block.outsideRefBefore && block.outsideRefBefore.trim() && !refParts.includes(block.outsideRefBefore.trim())) {
+              refParts.push(block.outsideRefBefore.trim());
+            }
+            if (block.outsideRefAfter && block.outsideRefAfter.trim() && !refParts.includes(block.outsideRefAfter.trim())) {
+              refParts.push(block.outsideRefAfter.trim());
+            }
+            if (refParts.length > 0) {
+              qOut += `${refParts.join(' ')}\n`;
             }
 
             lineMatchedQuestions.push(qOut.trim());
@@ -1836,11 +2155,14 @@ export default function App() {
   const converterSolaimanTableHtml = generateFormattedTableHtml(unicodeInputText1, 'SolaimanLipi', 'Ban', customDict);
   const converterSutonnyTableHtml = generateFormattedTableHtml(unicodeInputText1, 'SutonnyMJ', 'Ban', customDict);
   
-  const formatterSolaimanTableHtml = generateFormattedTableHtml(inputText2, 'SolaimanLipi', subjectCode, customDict);
-  const formatterSutonnyTableHtml = generateFormattedTableHtml(inputText2, 'SutonnyMJ', subjectCode, customDict);
+  const activeSubject = subjectCode === 'Custom' ? (customSubject.trim() || 'Ban') : subjectCode;
+  const activeSubjectRight = subjectCodeRight === 'Custom' ? (customSubjectRight.trim() || 'Ban') : subjectCodeRight;
 
-  const formatterRightSolaimanTableHtml = generateFormattedTableHtml(inputTextRight, 'SolaimanLipi', subjectCodeRight, customDict, true);
-  const formatterRightSutonnyTableHtml = generateFormattedTableHtml(inputTextRight, 'SutonnyMJ', subjectCodeRight, customDict, true);
+  const formatterSolaimanTableHtml = generateFormattedTableHtml(inputText2, 'SolaimanLipi', activeSubject, customDict, false, numMode, customStartNum);
+  const formatterSutonnyTableHtml = generateFormattedTableHtml(inputText2, 'SutonnyMJ', activeSubject, customDict, false, numMode, customStartNum);
+
+  const formatterRightSolaimanTableHtml = generateFormattedTableHtml(inputTextRight, 'SolaimanLipi', activeSubjectRight, customDict, true, numModeRight, customStartNumRight);
+  const formatterRightSutonnyTableHtml = generateFormattedTableHtml(inputTextRight, 'SutonnyMJ', activeSubjectRight, customDict, true, numModeRight, customStartNumRight);
 
   return (
     <div className="max-w-[950px] mx-auto p-4 md:p-6 bg-white rounded-xl shadow-md my-4">
@@ -1984,7 +2306,24 @@ export default function App() {
         >
           Error Checker
         </button>
+        <button
+          onClick={() => setActiveTab('dq')}
+          className={`px-5 py-2 rounded-md font-bold text-sm md:text-base border-2 transition-all flex items-center gap-1.5 ${
+            activeTab === 'dq'
+              ? 'bg-emerald-700 text-white border-emerald-700 shadow-md'
+              : 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 font-extrabold'
+          }`}
+          title="DQ : প্রশ্ন বিভাজন (Divide Questions)"
+        >
+          <i className="fa-solid fa-code-branch text-xs"></i>
+          DQ
+        </button>
       </div>
+
+      {/* ================= TAB: DQ (DIVIDE QUESTIONS) ================= */}
+      {activeTab === 'dq' && (
+        <DqTab />
+      )}
 
       {/* ================= TAB: IMPORTANT WEB ================= */}
       {activeTab === 'important-web' && (
@@ -2330,37 +2669,110 @@ export default function App() {
       {activeTab === 'formatter' && (
         <div>
           {/* Selection boxes */}
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setSubjectCode('Ban')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCode === 'Ban'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              Bangla
-            </button>
-            <button
-              onClick={() => setSubjectCode('Eng')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCode === 'Eng'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              English
-            </button>
-            <button
-              onClick={() => setSubjectCode('GK')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCode === 'GK'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              GK
-            </button>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {/* Subject Selection */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-gray-50 border border-gray-200 p-1.5 rounded-lg">
+              <span className="text-xs font-bold text-gray-700 px-1">বিষয়:</span>
+              <button
+                type="button"
+                onClick={() => setSubjectCode('Ban')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCode === 'Ban'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                Bangla
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCode('Eng')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCode === 'Eng'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                English
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCode('GK')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCode === 'GK'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                GK
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCode('Custom')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCode === 'Custom'
+                    ? 'bg-purple-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                কাস্টম বিষয়
+              </button>
+              {subjectCode === 'Custom' && (
+                <input
+                  type="text"
+                  value={customSubject}
+                  onChange={(e) => setCustomSubject(e.target.value)}
+                  placeholder="যেমন: Phy, Math"
+                  className="px-2 py-0.5 border border-purple-300 rounded text-xs w-24 font-bold bg-white focus:outline-none focus:border-purple-600"
+                />
+              )}
+            </div>
+
+            {/* Numbering Mode Selection */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-red-50/60 border border-red-200 p-1.5 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setNumMode('file')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numMode === 'file'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                ফাইল অনুযায়ী নাম্বারিং
+              </button>
+              <button
+                type="button"
+                onClick={() => setNumMode('auto')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numMode === 'auto'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                অটো নাম্বারিং
+              </button>
+              <button
+                type="button"
+                onClick={() => setNumMode('custom')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numMode === 'custom'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                কাস্টম নাম্বারিং
+              </button>
+              {numMode === 'custom' && (
+                <input
+                  type="number"
+                  value={customStartNum}
+                  onChange={(e) => setCustomStartNum(Math.max(1, parseInt(e.target.value) || 1))}
+                  placeholder="শুরু: ১"
+                  className="px-2 py-0.5 border border-red-400 rounded text-xs w-16 font-bold bg-white text-center focus:outline-none focus:border-red-600"
+                />
+              )}
+            </div>
           </div>
 
           <div className="flex justify-between items-center mt-3 mb-1">
@@ -2515,37 +2927,110 @@ export default function App() {
       {activeTab === 'right-formatter' && (
         <div>
           {/* Selection boxes */}
-          <div className="flex gap-2 mb-3">
-            <button
-              onClick={() => setSubjectCodeRight('Ban')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCodeRight === 'Ban'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              Bangla
-            </button>
-            <button
-              onClick={() => setSubjectCodeRight('Eng')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCodeRight === 'Eng'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              English
-            </button>
-            <button
-              onClick={() => setSubjectCodeRight('GK')}
-              className={`px-4 py-1.5 rounded-md font-bold text-sm border-2 transition ${
-                subjectCodeRight === 'GK'
-                  ? 'bg-sky-600 text-white border-sky-600'
-                  : 'bg-gray-100 text-gray-800 border-gray-300 hover:bg-gray-200'
-              }`}
-            >
-              GK
-            </button>
+          <div className="flex flex-wrap items-center gap-2 mb-3">
+            {/* Subject Selection */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-gray-50 border border-gray-200 p-1.5 rounded-lg">
+              <span className="text-xs font-bold text-gray-700 px-1">বিষয়:</span>
+              <button
+                type="button"
+                onClick={() => setSubjectCodeRight('Ban')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCodeRight === 'Ban'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                Bangla
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCodeRight('Eng')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCodeRight === 'Eng'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                English
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCodeRight('GK')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCodeRight === 'GK'
+                    ? 'bg-sky-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                GK
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubjectCodeRight('Custom')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  subjectCodeRight === 'Custom'
+                    ? 'bg-purple-600 text-white shadow-2xs'
+                    : 'bg-white text-gray-800 border border-gray-300 hover:bg-gray-100'
+                }`}
+              >
+                কাস্টম বিষয়
+              </button>
+              {subjectCodeRight === 'Custom' && (
+                <input
+                  type="text"
+                  value={customSubjectRight}
+                  onChange={(e) => setCustomSubjectRight(e.target.value)}
+                  placeholder="যেমন: Phy, Math"
+                  className="px-2 py-0.5 border border-purple-300 rounded text-xs w-24 font-bold bg-white focus:outline-none focus:border-purple-600"
+                />
+              )}
+            </div>
+
+            {/* Numbering Mode Selection */}
+            <div className="flex flex-wrap items-center gap-1.5 bg-red-50/60 border border-red-200 p-1.5 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setNumModeRight('file')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numModeRight === 'file'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                ফাইল অনুযায়ী নাম্বারিং
+              </button>
+              <button
+                type="button"
+                onClick={() => setNumModeRight('auto')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numModeRight === 'auto'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                অটো নাম্বারিং
+              </button>
+              <button
+                type="button"
+                onClick={() => setNumModeRight('custom')}
+                className={`px-3 py-1 rounded font-bold text-xs transition ${
+                  numModeRight === 'custom'
+                    ? 'bg-red-600 text-white shadow-2xs'
+                    : 'bg-white text-red-900 border border-red-200 hover:bg-red-100'
+                }`}
+              >
+                কাস্টম নাম্বারিং
+              </button>
+              {numModeRight === 'custom' && (
+                <input
+                  type="number"
+                  value={customStartNumRight}
+                  onChange={(e) => setCustomStartNumRight(Math.max(1, parseInt(e.target.value) || 1))}
+                  placeholder="শুরু: ১"
+                  className="px-2 py-0.5 border border-red-400 rounded text-xs w-16 font-bold bg-white text-center focus:outline-none focus:border-red-600"
+                />
+              )}
+            </div>
           </div>
 
           <div className="flex justify-between items-center mt-3 mb-1">
@@ -2997,29 +3482,154 @@ export default function App() {
           {/* Output Box */}
           <div className="mb-4">
             <div className="flex justify-between items-center mb-1.5 flex-wrap gap-2">
-              <label className="font-bold text-sm text-red-700">সংগৃহীত প্রশ্ন আউটপুট:</label>
-              {(isCollecting || qcStatusMsg) && (
-                <div className="bg-emerald-50 border border-emerald-400 text-emerald-700 text-xs font-bold px-3 py-1 rounded-md flex items-center gap-1.5 shadow-sm">
-                  {isCollecting && <i className="fa-solid fa-spinner fa-spin text-emerald-600"></i>}
-                  <span>{qcStatusMsg || 'প্রশ্ন সংগৃহীত হচ্ছে...'}</span>
+              <div className="flex items-center gap-3">
+                <label className="font-bold text-sm text-red-700">সংগৃহীত প্রশ্ন আউটপুট:</label>
+                {(isCollecting || qcStatusMsg) && (
+                  <div className="bg-emerald-50 border border-emerald-400 text-emerald-700 text-xs font-bold px-3 py-1 rounded-md flex items-center gap-1.5 shadow-sm">
+                    {isCollecting && <i className="fa-solid fa-spinner fa-spin text-emerald-600"></i>}
+                    <span>{qcStatusMsg || 'প্রশ্ন সংগৃহীত হচ্ছে...'}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {/* Option Prefix Selection Tabs: ক-ঘ, A-D & NO */}
+                <div className="flex items-center border-2 border-red-700 rounded-md overflow-hidden bg-white shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => handleQcOptionPrefixChange('BAN')}
+                    className={`px-3 py-1 text-xs font-bold transition-all ${
+                      qcOptionPrefix === 'BAN'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="প্রশ্নের অপশনে (ক), (খ), (গ), (ঘ) যোগ করুন"
+                  >
+                    ক-ঘ
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQcOptionPrefixChange('ENG')}
+                    className={`px-3 py-1 text-xs font-bold border-l-2 border-red-700 transition-all ${
+                      qcOptionPrefix === 'ENG'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="প্রশ্নের অপশনে (a), (b), (c), (d) যোগ করুন"
+                  >
+                    A-D
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleQcOptionPrefixChange('NO')}
+                    className={`px-3 py-1 text-xs font-bold border-l-2 border-red-700 transition-all ${
+                      qcOptionPrefix === 'NO'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="অপশনে কোনো ক-ঘ বা A-D প্রিফিক্স থাকবে না (স্বাভাবিক)"
+                  >
+                    NO
+                  </button>
                 </div>
-              )}
+
+                {/* Font Selection Tabs: Combo, SolaimanLipi & SutonnyMJ */}
+                <div className="flex items-center border-2 border-red-700 rounded-md overflow-hidden bg-white shadow-sm">
+                  <button
+                    type="button"
+                    onClick={() => setQcFontMode('Combo')}
+                    className={`px-3 py-1 text-xs font-bold transition-all ${
+                      qcFontMode === 'Combo'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="Combo: SolaimanLipi এবং SutonnyMJ দুটি আউটপুট একসাথে"
+                  >
+                    Combo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQcFontMode('SolaimanLipi')}
+                    className={`px-3 py-1 text-xs font-bold border-l-2 border-red-700 transition-all ${
+                      qcFontMode === 'SolaimanLipi'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="SolaimanLipi (ইউনিকোড) এবং Times New Roman ফন্টে আউটপুট"
+                  >
+                    SolaimanLipi
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQcFontMode('SutonnyMJ')}
+                    className={`px-3 py-1 text-xs font-bold border-l-2 border-red-700 transition-all ${
+                      qcFontMode === 'SutonnyMJ'
+                        ? 'bg-red-700 text-white shadow-xs'
+                        : 'bg-white text-gray-700 hover:bg-gray-100'
+                    }`}
+                    title="SutonnyMJ (বিজয়) এবং Times New Roman ফন্টে আউটপুট"
+                  >
+                    SutonnyMJ
+                  </button>
+                </div>
+              </div>
             </div>
-            <div id="qcResultBox" className="dual-preview-box">
-              {renderFormattedSpans(qcResultText, 'SolaimanLipi')}
+            <div id="qcResultBox" className="dual-preview-box min-h-[140px] max-h-[500px]">
+              {qcFontMode === 'Combo' ? (
+                <div>
+                  <p style={{ margin: '4px 0 6px 0', padding: 0 }} className="font-bold text-base text-red-600">
+                    <span style={{ color: '#dc2626', fontWeight: 'bold' }}>SolaimanLipi আউটপুট</span>
+                  </p>
+                  <div className="combo-solaiman-section mb-6">
+                    {renderFormattedSpans(qcResultText, 'SolaimanLipi')}
+                  </div>
+                  <p style={{ margin: '18px 0 6px 0', padding: 0 }} className="font-bold text-base text-purple-600">
+                    <span style={{ color: '#7c3aed', fontWeight: 'bold' }}>SutonnyMJ আউটপুট</span>
+                  </p>
+                  <div className="combo-sutonny-section">
+                    {renderFormattedSpans(qcResultText, 'SutonnyMJ')}
+                  </div>
+                </div>
+              ) : (
+                renderFormattedSpans(qcResultText, qcFontMode)
+              )}
             </div>
             <div className="flex items-center gap-4 bg-white border border-gray-200 border-t-0 p-2 rounded-b-md w-fit text-sm text-gray-600 shadow-sm mb-4">
               <i
                 className="fa-regular fa-copy cursor-pointer hover:text-gray-900"
-                title="কপি করুন"
-                onClick={() => copyFormattedContent('qcResultBox', setMsgQc, qcResultText)}
+                title={
+                  qcFontMode === 'Combo'
+                    ? 'Combo (SolaimanLipi ও SutonnyMJ) কপি করুন'
+                    : `${qcFontMode} কপি করুন`
+                }
+                onClick={() => {
+                  if (qcFontMode === 'SutonnyMJ') {
+                    copyBijoyText(qcResultText, setMsgQc);
+                  } else {
+                    copyFormattedContent('qcResultBox', setMsgQc, qcResultText);
+                  }
+                }}
               ></i>
               <i
                 className="fa-solid fa-download cursor-pointer hover:text-gray-900"
-                title="ডাউনলোড করুন"
+                title={
+                  qcFontMode === 'Combo'
+                    ? 'Combo Word ফাইল (.docx) ডাউনলোড করুন'
+                    : `${qcFontMode} Word ফাইল (.docx) ডাউনলোড করুন`
+                }
                 onClick={() => {
                   const el = document.getElementById('qcResultBox');
-                  downloadWordDoc(el?.innerHTML || qcResultText, 'SolaimanLipi', qcFileName || 'collected-questions.docx', setMsgQc);
+                  downloadWordDoc(
+                    el?.innerHTML || qcResultText,
+                    qcFontMode,
+                    qcFileName ||
+                      (qcFontMode === 'Combo'
+                        ? 'collected-questions-combo.docx'
+                        : qcFontMode === 'SutonnyMJ'
+                        ? 'collected-questions-sutonny.docx'
+                        : 'collected-questions-solaiman.docx'),
+                    setMsgQc
+                  );
                 }}
               ></i>
               {msgQc && <span className="text-xs font-bold text-emerald-600 ml-1">{msgQc}</span>}

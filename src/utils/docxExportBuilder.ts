@@ -13,7 +13,8 @@ export interface RunStyle {
   underline?: boolean;
   highlight?: boolean; // green highlight
   font?: string; // 'SolaimanLipi' | 'SutonnyMJ' | 'Times New Roman' | 'Cambria Math'
-  fontSize?: number; // half-points: 20 = 10pt, 22 = 11pt
+  fontSize?: number; // half-points: 20 = 10pt
+  color?: string; // Hex color without # e.g. "DC2626", "7C3AED"
 }
 
 /**
@@ -43,9 +44,9 @@ function hasLatexMath(str: string): boolean {
 function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont: string): string {
   if (!text) return '';
 
-  const activeFont = style.font || defaultFont || 'SolaimanLipi';
+  const activeFont = (style.font && style.font !== 'Combo') ? style.font : (defaultFont && defaultFont !== 'Combo' ? defaultFont : 'SolaimanLipi');
   const isSutonny = activeFont === 'SutonnyMJ';
-  const szVal = style.fontSize ? style.fontSize : 22; // default 11pt
+  const szVal = 20; // All fonts strictly 10pt (20 half-points)
 
   const makeRPr = (fontName: string): string => {
     const rPrElements: string[] = [
@@ -57,6 +58,7 @@ function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont:
     if (style.italic) rPrElements.push('<w:i/><w:iCs/>');
     if (style.underline) rPrElements.push('<w:u w:val="single"/>');
     if (style.highlight) rPrElements.push('<w:highlight w:val="green"/>');
+    if (style.color) rPrElements.push(`<w:color w:val="${escapeXml(style.color)}"/>`);
     return `<w:rPr>${rPrElements.join('')}</w:rPr>`;
   };
 
@@ -68,11 +70,11 @@ function convertTextSegmentToWordXml(text: string, style: RunStyle, defaultFont:
 
   if (!hasLatexMath(text)) {
     if (!isSutonny && activeFont === 'SolaimanLipi') {
-      const tokens = text.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
+      const tokens = text.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+|,+)/);
       let res = '';
       for (const tok of tokens) {
         if (!tok) continue;
-        if (/^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(tok)) {
+        if ((/^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(tok) && /[a-zA-Z0-9]/.test(tok)) || /^,+$/.test(tok)) {
           res += makeWordRun(tok, 'Times New Roman');
         } else {
           res += makeWordRun(tok, 'SolaimanLipi');
@@ -221,13 +223,13 @@ function normalizeContainerToBlocks(containerNode: Node, currentStyle: RunStyle,
           const cellBlocks = normalizeContainerToBlocks(td, style, defaultFont);
           let cellContentXml = cellBlocks.join('');
           if (!cellContentXml.trim()) {
-            cellContentXml = '<w:p/>';
+            cellContentXml = '<w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:p>';
           }
 
-          cellsXml += `<w:tc><w:tcPr><w:tcW w:w="${cellW}" w:type="dxa"/></w:tcPr>${cellContentXml}</w:tc>`;
+          cellsXml += `<w:tc><w:tcPr><w:tcW w:w="${cellW}" w:type="dxa"/><w:tcMar><w:top w:w="40" w:type="dxa"/><w:bottom w:w="40" w:type="dxa"/><w:left w:w="80" w:type="dxa"/><w:right w:w="80" w:type="dxa"/></w:tcMar></w:tcPr>${cellContentXml}</w:tc>`;
         });
 
-        rowsXml += `<w:tr><w:trPr><w:cantSplit/></w:trPr>${cellsXml}</w:tr>`;
+        rowsXml += `<w:tr><w:trPr><w:cantSplit/><w:trHeight w:val="173" w:hRule="atLeast"/></w:trPr>${cellsXml}</w:tr>`;
       });
 
       const isBordered =
@@ -248,16 +250,10 @@ function normalizeContainerToBlocks(containerNode: Node, currentStyle: RunStyle,
     if (tagName === 'p' || tagName === 'div' || tagName === 'h1' || tagName === 'h2' || tagName === 'h3') {
       flushInlineBuffer();
 
-      const nextStyle: RunStyle = { ...style };
-      if (tagName === 'h1') {
+      const nextStyle: RunStyle = { ...style, fontSize: 20 };
+      if (tagName === 'h1' || tagName === 'h2' || tagName === 'h3') {
         nextStyle.bold = true;
-        nextStyle.fontSize = 28;
-      } else if (tagName === 'h2') {
-        nextStyle.bold = true;
-        nextStyle.fontSize = 24;
-      } else if (tagName === 'h3') {
-        nextStyle.bold = true;
-        nextStyle.fontSize = 22;
+        nextStyle.fontSize = 20;
       }
 
       // Check alignment
@@ -334,7 +330,7 @@ function normalizeContainerToBlocks(containerNode: Node, currentStyle: RunStyle,
 
 function getNextStyleForElement(el: HTMLElement, style: RunStyle, defaultFont: string): RunStyle {
   const tagName = el.tagName.toLowerCase();
-  const nextStyle: RunStyle = { ...style };
+  const nextStyle: RunStyle = { ...style, fontSize: 20 }; // Strictly 10pt (20 half-points) for all elements
 
   if (tagName === 'b' || tagName === 'strong') nextStyle.bold = true;
   if (tagName === 'i' || tagName === 'em') nextStyle.italic = true;
@@ -353,8 +349,10 @@ function getNextStyleForElement(el: HTMLElement, style: RunStyle, defaultFont: s
 
   if (el.classList.contains('eng-text') || el.classList.contains('eng')) {
     nextStyle.font = 'Times New Roman';
+  } else if (el.classList.contains('bijoy-text') || el.classList.contains('bijoy')) {
+    nextStyle.font = 'SutonnyMJ';
   } else if (el.classList.contains('ben-text') || el.classList.contains('ben')) {
-    nextStyle.font = defaultFont;
+    nextStyle.font = (defaultFont && defaultFont !== 'Combo') ? defaultFont : 'SolaimanLipi';
   } else if (el.style.fontFamily?.includes('Times New Roman')) {
     nextStyle.font = 'Times New Roman';
   } else if (el.style.fontFamily?.includes('SutonnyMJ')) {
@@ -363,13 +361,58 @@ function getNextStyleForElement(el: HTMLElement, style: RunStyle, defaultFont: s
     nextStyle.font = 'SolaimanLipi';
   }
 
-  if (el.style.fontSize?.includes('11pt')) {
-    nextStyle.fontSize = 22;
-  } else if (el.style.fontSize?.includes('12pt')) {
-    nextStyle.fontSize = 24;
+  // Color extraction
+  const styleColor = el.style.color || el.getAttribute('color') || '';
+  if (styleColor) {
+    const cleanColor = styleColor.trim().toLowerCase();
+    if (cleanColor.startsWith('#')) {
+      nextStyle.color = cleanColor.substring(1).toUpperCase();
+    } else if (cleanColor.startsWith('rgb')) {
+      const match = cleanColor.match(/\d+/g);
+      if (match && match.length >= 3) {
+        nextStyle.color = match.slice(0, 3).map(x => parseInt(x, 10).toString(16).padStart(2, '0')).join('').toUpperCase();
+      }
+    } else if (cleanColor === 'red') {
+      nextStyle.color = 'DC2626';
+    } else if (cleanColor === 'purple') {
+      nextStyle.color = '7C3AED';
+    }
   }
 
+  if (el.classList.contains('text-red-600') || el.classList.contains('text-red-700')) {
+    nextStyle.color = 'DC2626';
+  } else if (el.classList.contains('text-purple-600') || el.classList.contains('text-purple-700') || el.classList.contains('text-violet-600')) {
+    nextStyle.color = '7C3AED';
+  }
+
+  nextStyle.fontSize = 20; // Enforce 10pt
+
   return nextStyle;
+}
+
+/**
+ * Enforces font size 10pt (20 half-points) on all OpenXML runs and style definitions
+ */
+function enforceFontSize10InOpenXml(xml: string): string {
+  if (!xml) return xml;
+  // 1. Replace any existing sz / szCs values with 20 (10pt)
+  let updated = xml
+    .replace(/<w:sz(?:\s+[^>]*?)?w:val="[^"]*"/gi, '<w:sz w:val="20"')
+    .replace(/<w:szCs(?:\s+[^>]*?)?w:val="[^"]*"/gi, '<w:szCs w:val="20"');
+
+  // 2. Ensure all <w:rPr> blocks have <w:sz w:val="20"/><w:szCs w:val="20"/>
+  updated = updated.replace(/<w:rPr>([\s\S]*?)<\/w:rPr>/gi, (match, inner) => {
+    let newInner = inner;
+    if (!/<w:sz\b/i.test(newInner)) {
+      newInner += '<w:sz w:val="20"/>';
+    }
+    if (!/<w:szCs\b/i.test(newInner)) {
+      newInner += '<w:szCs w:val="20"/>';
+    }
+    return `<w:rPr>${newInner}</w:rPr>`;
+  });
+
+  return updated;
 }
 
 /**
@@ -407,6 +450,8 @@ async function generateNativeOpenXmlBlobFallback(
     documentXml = patchDocxXmlWithOmml(documentXml, ommlMap);
   }
 
+  documentXml = enforceFontSize10InOpenXml(documentXml);
+
   const contentTypesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -439,7 +484,8 @@ async function generateNativeOpenXmlBlobFallback(
  * Primary DOCX Blob generator:
  * 1. Uses html-docx-js (window.htmlDocx) to convert HTML to compliant .docx
  * 2. Patches word/document.xml with native OMML Math equations (<m:oMath>)
- * 3. Falls back to strict block-level OpenXML generator if htmlDocx is missing
+ * 3. Enforces 10pt (20 half-points) font size on all text runs
+ * 4. Falls back to strict block-level OpenXML generator if htmlDocx is missing
  */
 export async function convertHtmlToNativeDocxBlob(
   htmlContent: string,
@@ -456,9 +502,12 @@ export async function convertHtmlToNativeDocxBlob(
       size: A4 portrait;
       margin: 0.5in;
     }
-    body {
+    * {
+      font-size: 10pt !important;
+    }
+    body, p, span, td, th, div, table, tr, mark, b, strong, i, em, u, h1, h2, h3, h4, h5, h6 {
       font-family: '${primaryFont}', 'SolaimanLipi', 'SutonnyMJ', 'Times New Roman', serif;
-      font-size: 11pt;
+      font-size: 10pt !important;
       line-height: 1.15;
       color: #000000;
     }
@@ -466,25 +515,31 @@ export async function convertHtmlToNativeDocxBlob(
       margin: 0 0 4px 0;
       padding: 0;
       line-height: 1.2;
+      font-size: 10pt !important;
     }
     table {
       width: 100%;
       border-collapse: collapse;
       margin-bottom: 6px;
+      font-size: 10pt !important;
     }
     td, th {
       vertical-align: top;
       padding: 3px 5px;
+      font-size: 10pt !important;
     }
     table.bordered td, table.bordered th, table.wcr-table td, table.wcr-table th, table.qc-table td, table.qc-table th {
       border: 1px solid #000000;
+      font-size: 10pt !important;
     }
     .eng-text, .eng {
       font-family: 'Times New Roman', serif !important;
+      font-size: 10pt !important;
     }
     mark, .highlight-lime {
       background-color: #00ff00 !important;
       mso-highlight: lime !important;
+      font-size: 10pt !important;
     }
   </style>
 </head>
@@ -511,22 +566,41 @@ ${htmlWithPlaceholders}
 
   if (docxBlob) {
     try {
-      if (ommlMap.size > 0) {
-        const zip = await JSZip.loadAsync(docxBlob);
-        const docXmlFile = zip.file('word/document.xml');
-        if (docXmlFile) {
-          let docXml = await docXmlFile.async('string');
+      const zip = await JSZip.loadAsync(docxBlob);
+      const docXmlFile = zip.file('word/document.xml');
+      if (docXmlFile) {
+        let docXml = await docXmlFile.async('string');
+        if (ommlMap.size > 0) {
           docXml = patchDocxXmlWithOmml(docXml, ommlMap);
-          zip.file('word/document.xml', docXml);
-          return await zip.generateAsync({
-            type: 'blob',
-            mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-          });
         }
+        // Enforce font size 10pt (20 half-points) on all runs
+        docXml = enforceFontSize10InOpenXml(docXml);
+
+        // Guarantee A4 paper size and exactly 0.5 inch (720 twips) margins in sectPr
+        const a4SectPr = '<w:sectPr><w:pgSz w:w="11906" w:h="16838" w:orient="portrait"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="288" w:footer="288" w:gutter="0"/></w:sectPr>';
+        if (/<w:sectPr(?:\s[^>]*)?>[\s\S]*?<\/w:sectPr>/i.test(docXml)) {
+          docXml = docXml.replace(/<w:sectPr(?:\s[^>]*)?>[\s\S]*?<\/w:sectPr>/i, a4SectPr);
+        } else if (/<\/w:body>/i.test(docXml)) {
+          docXml = docXml.replace(/<\/w:body>/i, `${a4SectPr}</w:body>`);
+        }
+        zip.file('word/document.xml', docXml);
+
+        // Also enforce in styles.xml if present
+        const stylesFile = zip.file('word/styles.xml');
+        if (stylesFile) {
+          let stylesXml = await stylesFile.async('string');
+          stylesXml = enforceFontSize10InOpenXml(stylesXml);
+          zip.file('word/styles.xml', stylesXml);
+        }
+
+        return await zip.generateAsync({
+          type: 'blob',
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        });
       }
       return docxBlob;
     } catch (e) {
-      console.warn('Failed patching OMML on htmlDocx blob:', e);
+      console.warn('Failed patching OMML / page layout on htmlDocx blob:', e);
       return docxBlob;
     }
   }

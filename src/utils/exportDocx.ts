@@ -10,30 +10,47 @@ function createMixedFontTextRuns(text: string, isBold: boolean = false): TextRun
   const solaimanFontObj = { name: 'SolaimanLipi', ascii: 'SolaimanLipi', hAnsi: 'SolaimanLipi', cs: 'SolaimanLipi', eastAsia: 'SolaimanLipi' };
   const timesFontObj = { name: 'Times New Roman', ascii: 'Times New Roman', hAnsi: 'Times New Roman', cs: 'Times New Roman', eastAsia: 'Times New Roman' };
 
+  const formatTokenRun = (tok: string) => {
+    if (!tok) return;
+    if (isEnglishWord(tok)) {
+      runs.push(new TextRun({ text: tok, font: timesFontObj, bold: isBold, italics: false, size: 20 }));
+    } else if (/[\u0980-\u09FF]/.test(tok) && /[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]/.test(tok)) {
+      const subParts = tok.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
+      for (const part of subParts) {
+        if (!part) continue;
+        if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) {
+          runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false, size: 20 }));
+        } else if (/[\u0980-\u09FF]/.test(part)) {
+          runs.push(new TextRun({ text: part, font: solaimanFontObj, bold: isBold, italics: false, size: 20 }));
+        } else {
+          runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false, size: 20 }));
+        }
+      }
+    } else {
+      runs.push(new TextRun({ text: tok, font: solaimanFontObj, bold: isBold, italics: false, size: 20 }));
+    }
+  };
+
   const tokens = text.split(/(\s+)/);
   for (const token of tokens) {
     if (!token) continue;
     if (!token.trim()) {
-      runs.push(new TextRun({ text: token, font: solaimanFontObj, bold: isBold, italics: false }));
+      runs.push(new TextRun({ text: token, font: solaimanFontObj, bold: isBold, italics: false, size: 20 }));
       continue;
     }
 
-    if (isEnglishWord(token)) {
-      runs.push(new TextRun({ text: token, font: timesFontObj, bold: isBold, italics: false }));
-    } else if (/[\u0980-\u09FF]/.test(token) && /[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]/.test(token)) {
-      const subParts = token.split(/([a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+)/);
-      for (const part of subParts) {
-        if (!part) continue;
-        if (isEnglishWord(part) || /^[a-zA-Z0-9\.\-_/@#\+\:\~\×\÷\=\±]+$/.test(part)) {
-          runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false }));
-        } else if (/[\u0980-\u09FF]/.test(part)) {
-          runs.push(new TextRun({ text: part, font: solaimanFontObj, bold: isBold, italics: false }));
+    if (token.includes(',')) {
+      const parts = token.split(/(,+)/);
+      for (const p of parts) {
+        if (!p) continue;
+        if (/^,+$/.test(p)) {
+          runs.push(new TextRun({ text: p, font: timesFontObj, bold: isBold, italics: false, size: 20 }));
         } else {
-          runs.push(new TextRun({ text: part, font: timesFontObj, bold: isBold, italics: false }));
+          formatTokenRun(p);
         }
       }
     } else {
-      runs.push(new TextRun({ text: token, font: solaimanFontObj, bold: isBold, italics: false }));
+      formatTokenRun(token);
     }
   }
 
@@ -87,11 +104,11 @@ function exportHtmlAsDoc(text: string, filename: string) {
 <head>
 <meta charset="utf-8">
 <style>
-  body { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; font-size: 11pt; line-height: 1.5; color: #111; }
-  h1, h2, h3 { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; color: #000; }
-  p { margin: 0 0 8px 0; }
-  .eng { font-family: 'Times New Roman', serif; }
-  .ben { font-family: 'SolaimanLipi', sans-serif; }
+  body { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; font-size: 10pt; line-height: 1.5; color: #111; }
+  h1, h2, h3, p, span, div { font-family: 'SolaimanLipi', 'Times New Roman', sans-serif; font-size: 10pt; color: #000; }
+  p { margin: 0 0 8px 0; font-size: 10pt; }
+  .eng { font-family: 'Times New Roman', serif; font-size: 10pt; }
+  .ben { font-family: 'SolaimanLipi', sans-serif; font-size: 10pt; }
 </style>
 </head>
 <body>
@@ -162,9 +179,35 @@ export async function downloadAsDocx(text: string, filename: string = 'Gemini_Ch
     }
 
     const doc = new Document({
+      styles: {
+        default: {
+          document: {
+            run: {
+              size: 20, // 10pt
+              font: 'SolaimanLipi',
+            },
+          },
+        },
+      },
       sections: [
         {
-          properties: {},
+          properties: {
+            page: {
+              size: {
+                width: 11906, // A4 width (210mm) in twips
+                height: 16838, // A4 height (297mm) in twips
+              },
+              margin: {
+                top: 720,    // 0.5 inch in twips
+                right: 720,  // 0.5 inch in twips
+                bottom: 720, // 0.5 inch in twips
+                left: 720,   // 0.5 inch in twips
+                header: 288,
+                footer: 288,
+                gutter: 0,
+              },
+            },
+          },
           children,
         },
       ],

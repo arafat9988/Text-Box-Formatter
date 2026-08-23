@@ -3,6 +3,7 @@ import Markdown from 'react-markdown';
 import { downloadAsDocx } from '../utils/exportDocx';
 import { isEnglishWord } from '../utils/bijoy';
 import { BookReserveModal } from './BookReserveModal';
+import { DqModal } from './DqModal';
 import { ReservedBook, getAllReservedBooks } from '../utils/bookReserveDB';
 
 function formatTextToReactSpans(text: string): React.ReactNode[] {
@@ -200,6 +201,9 @@ export const ChatTab: React.FC = () => {
   // Book Reserve State
   const [reservedBooks, setReservedBooks] = useState<ReservedBook[]>([]);
   const [isBookReserveOpen, setIsBookReserveOpen] = useState<boolean>(false);
+
+  // DQ (Divide Questions) State
+  const [isDqModalOpen, setIsDqModalOpen] = useState<boolean>(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -775,6 +779,16 @@ export const ChatTab: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* DQ (Divide Questions) Button */}
+          <button
+            onClick={() => setIsDqModalOpen(true)}
+            className="text-xs font-bold px-3 py-1.5 rounded-lg border transition flex items-center gap-1.5 cursor-pointer shadow-xs bg-white hover:bg-emerald-50 hover:text-emerald-700 text-gray-700 border-gray-300 hover:border-emerald-300"
+            title="DQ: প্রশ্ন বিভাজন (Divide Questions - ১, ১, ১... ২০, ২০, ২০)"
+          >
+            <i className="fa-solid fa-code-branch text-xs text-emerald-600"></i>
+            DQ
+          </button>
+
           {/* Book Reserve Button */}
           <button
             onClick={() => setIsBookReserveOpen(true)}
@@ -1486,6 +1500,18 @@ export const ChatTab: React.FC = () => {
         books={reservedBooks}
         onBooksChanged={refreshReservedBooks}
         onSelectBookForChat={handleSelectBookForChat}
+      />
+
+      {/* DQ (Divide Questions) Modal */}
+      <DqModal
+        isOpen={isDqModalOpen}
+        onClose={() => setIsDqModalOpen(false)}
+        onSendToChat={(text) => {
+          setInput(text);
+          if (textareaRef.current) {
+            textareaRef.current.focus();
+          }
+        }}
       />
     </div>
   );
